@@ -50,9 +50,8 @@ The default rate is `TRAFFIC_RATE=2` (2 req/s), set in the Deployment spec — e
 produce meaningful APM data without overwhelming a demo cluster. Raise it for load
 testing, lower it for quiet demos.
 
-The generator pod is deliberately **not** instrumented with Datadog (no
-`admission.datadoghq.com/enabled` annotation) — it's tooling, not a Finance service, so
-its own traces would just add noise to APM.
+The generator pod is plain tooling, not a Finance service — it simply drives load against
+the application's services.
 
 ---
 
@@ -221,26 +220,3 @@ psql -h localhost -U "$POSTGRES_USER" -d ledger
 # See accounts seeded by the script
 SELECT id, owner_id, tier, currency, balance FROM accounts;
 ```
-
----
-
-## Relationship to the Datadog Learning Progression
-
-The traffic generator is useful at **every step** of the Learning Progression in
-`INSTRUMENTATION.md`:
-
-| Step | What the generator proves |
-|---|---|
-| Step 1 — Structured JSON logs | Log lines have the Finance JSON schema |
-| Step 2 — Unified Service Tagging | `env`, `service`, `version` tags appear on all telemetry |
-| Step 3 — APM | Traces appear in APM > Services; payment flow visible as a distributed trace |
-| Step 4 — Log–trace correlation | `dd.trace_id` appears in log records; "View in APM" button works |
-| Step 5 — Custom spans | `payment.authorize`, `account.balance_check` spans appear in flame graphs |
-| Step 6 — Custom metrics | `finance.payment.initiated`, `finance.payment.processing_time` in dashboards |
-| Step 9 — Database Monitoring | Account and transaction queries appear in Databases > Query Samples |
-| Step 10 — ActiveMQ JMX metrics | `fraud.score.queue` depth and consumer count visible in the ActiveMQ integration |
-| Step 12 — Synthetic Monitoring | Use alongside Synthetic tests to compare real vs. scripted traffic |
-
-The in-cluster `traffic-generator` Deployment already keeps this data fresh continuously.
-Use the manual/laptop invocation (`python3 scripts/generate-traffic.py --rate 3 --duration 300`)
-only if you need a targeted burst before opening a specific Datadog product page.

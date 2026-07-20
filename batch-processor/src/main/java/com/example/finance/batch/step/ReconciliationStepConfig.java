@@ -17,36 +17,15 @@ import org.springframework.transaction.PlatformTransactionManager;
 import javax.sql.DataSource;
 import java.util.Map;
 
-// ── DATADOG INSTRUMENTATION ───────────────────────────────────────────────────
-// Manual span creation for the reconciliation step's pre/post-processing logic.
-//
-// The dd-java-agent auto-instruments the chunk-oriented step (reader/processor/
-// writer) with a "batch.step" span. The manual @Trace below adds a child span
-// for the pre-flight validation tasklet — a Finance-critical operation that runs
-// before the main chunk processing begins.
-//
-// Requires: dd-trace-api on classpath (see build.gradle)
-//
-// import datadog.trace.api.Trace;
-// import io.opentracing.Span;
-// import io.opentracing.util.GlobalTracer;
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Spring Batch {@link Step} configuration for the End-of-Day Reconciliation job.
  *
- * <p>Defines two steps:
- * <ol>
- *   <li>{@code reconciliation-preflight-step} — tasklet that validates source
- *       data availability before the main chunk processing begins. Wrapped with
- *       a commented {@code @Trace} to create a named child span.</li>
- *   <li>{@code reconciliation-step} — chunk-oriented step (reader → processor →
- *       writer) wired from {@link ReconciliationJob} beans. Chunk size: 100.</li>
- * </ol>
+ * <p>Placeholder for step-level configuration. The main chunk-oriented step
+ * (reader → processor → writer) is defined in {@link ReconciliationJob}
+ * (chunk size: 100).
  *
- * <p>The chunk-oriented step is auto-instrumented by dd-java-agent.
- * The preflight tasklet requires a manual {@code @Trace} (commented) to appear
- * as a distinct named operation in APM traces.
+ * <p>A pre-flight validation tasklet that checks source data availability
+ * before the main chunk processing begins can be added here.
  */
 @Configuration
 public class ReconciliationStepConfig {
@@ -68,11 +47,6 @@ public class ReconciliationStepConfig {
     // Validates that the transactions table has data for the current run date
     // before committing to the full chunk-processing step.
     //
-    // ── DATADOG INSTRUMENTATION ───────────────────────────────────────────────
-    // Add @Trace to preflightTasklet().execute() to create a named child span.
-    // This makes the preflight duration separately visible in APM, independent
-    // of the main processing step's duration.
-    //
     // @Bean
     // public Step reconciliationPreflightStep() {
     //     return new StepBuilder("reconciliation-preflight-step", jobRepository)
@@ -83,20 +57,9 @@ public class ReconciliationStepConfig {
     // @Bean
     // public Tasklet preflightTasklet() {
     //     return new Tasklet() {
-    //         // @Trace(operationName = "batch.step", resourceName = "reconciliation-preflight")
     //         @Override
     //         public RepeatStatus execute(StepContribution contribution,
     //                                     ChunkContext chunkContext) {
-    //             // ── DATADOG INSTRUMENTATION ────────────────────────────────
-    //             // import io.opentracing.Span;
-    //             // import io.opentracing.util.GlobalTracer;
-    //             //
-    //             // Span span = GlobalTracer.get().activeSpan();
-    //             // if (span != null) {
-    //             //     span.setTag("job.name", "end-of-day-reconciliation");
-    //             //     span.setTag("job.step", "preflight");
-    //             // }
-    //             // ─────────────────────────────────────────────────────────
     //             log.info("Preflight validation: checking transaction data availability");
     //             // TODO: SELECT COUNT(*) FROM transactions WHERE status='settled' AND settled_at >= CURRENT_DATE
     //             // If count == 0, throw exception to fail fast before chunk processing.

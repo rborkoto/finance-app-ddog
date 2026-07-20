@@ -12,16 +12,11 @@ const router = express.Router();
 const logger = pino({
   level: process.env.LOG_LEVEL || "info",
   base: {
-    service: process.env.DD_SERVICE || "transaction-service",
-    env: process.env.DD_ENV || "development",
-    version: process.env.DD_VERSION || "0.0.0",
+    service: process.env.SERVICE_NAME || "transaction-service",
+    env: process.env.APP_ENV || "development",
+    version: process.env.APP_VERSION || "0.0.0",
   },
 });
-
-// Custom metrics for this service are generated from APM spans by span-based
-// metrics in deploy/terraform/datadog (e.g. finance.payment.hits / .duration).
-// No DogStatsD client is used here.
-// Docs: https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/
 
 // In-memory payment store (replace with PostgreSQL in a real deployment)
 const payments = new Map();
@@ -43,31 +38,6 @@ router.post("/", async (req, res) => {
   // Use the payment_id forwarded by the gateway, or generate one if called directly.
   const payment_id = incoming_id || uuidv4();
   const startTime = Date.now();
-
-  // ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-  // Step 5 — custom span for payment.authorize.
-  // Wraps the core authorisation logic so the span duration matches the
-  // actual business operation, not the full HTTP handler.
-  //
-  // Finance tags (transaction.type, payment.currency) let you slice APM
-  // error rates and latency by transaction category and currency in the
-  // APM Service page or a custom dashboard.
-  //
-  // HIGH-CARDINALITY WARNING: Do NOT tag with raw payment_id or account_id
-  // at the metric level — use them only on spans/logs where trace sampling
-  // already limits volume. See: https://docs.datadoghq.com/tagging/assigning_tags/
-  //
-  // const tracer = require('dd-trace');
-  // const span = tracer.startSpan('payment.authorize', {
-  //   tags: {
-  //     'transaction.type':  'payment',
-  //     'payment.currency':  currency,
-  //     'account.id':        account_id,  // bounded: OK on spans, not on metrics
-  //     'http.route':        '/v1/payments',
-  //     'resource.name':     'payment.authorize',
-  //   },
-  // });
-  // ─────────────────────────────────────────────────────────────────────
 
   // Store the payment immediately — persistence must not depend on JMS availability.
   const payment = {
@@ -112,13 +82,6 @@ router.post("/", async (req, res) => {
       },
       "payment.initiated",
     );
-
-    // ── DATADOG INSTRUMENTATION ──────────────────────────────────────
-    // Step 5 (continued) — close the payment.authorize span on success.
-    // Custom metrics (finance.payment.hits / .duration) come from span-based
-    // metrics in deploy/terraform/datadog — no DogStatsD here.
-    // span.finish();
-    // ─────────────────────────────────────────────────────────────────
 
     return res.status(201).json(payment);
   } catch (err) {
@@ -178,17 +141,11 @@ router.patch("/:id", (req, res) => {
     "payment.validated",
   );
 
-  // (finance.payment.validated is derived from the PATCH span/log via a
-  //  span- or log-based metric in deploy/terraform/datadog — no DogStatsD.)
-
   return res.json(payment);
 });
 
 // ── GET /v1/payments/:id ─────────────────────────────────────────────
 // Returns a payment by ID. In production this would query PostgreSQL.
-// Step 9 — enable DBM to see the underlying SELECT query plan and
-// correlate it with this APM span.
-// Docs: https://docs.datadoghq.com/database_monitoring/connect_dbm_and_apm/
 // ─────────────────────────────────────────────────────────────────────
 router.get("/:id", (req, res) => {
   const { id } = req.params;

@@ -6,9 +6,9 @@ const pino = require("pino");
 const logger = pino({
   level: process.env.LOG_LEVEL || "info",
   base: {
-    service: process.env.DD_SERVICE || "transaction-service",
-    env: process.env.DD_ENV || "development",
-    version: process.env.DD_VERSION || "0.0.0",
+    service: process.env.SERVICE_NAME || "transaction-service",
+    env: process.env.APP_ENV || "development",
+    version: process.env.APP_VERSION || "0.0.0",
     component: "messaging.producer",
   },
 });
@@ -21,14 +21,6 @@ const ACTIVEMQ_URL =
   process.env.ACTIVEMQ_STOMP_URL || "stomp://localhost:61613";
 const [host, portStr] = ACTIVEMQ_URL.replace("stomp://", "").split(":");
 const BROKER_PORT = parseInt(portStr || "61613", 10);
-
-// Data Streams Monitoring (DSM): for Node.js, dd-trace auto-instruments STOMP
-// once the tracer is initialised (see src/index.js) and DD_DATA_STREAMS_ENABLED=true
-// is set on the pod (deploy/kubernetes/base/services/transaction-service.yaml).
-// No manual producer checkpoint is needed — pathway context is injected into the
-// STOMP message headers automatically. Verify in Datadog > APM > Data Streams:
-// transaction-service → fraud.score.queue → fraud-detection.
-// Docs: https://docs.datadoghq.com/data_streams/nodejs/
 
 /**
  * Publishes a JSON payload to the given STOMP destination on ActiveMQ.
@@ -89,10 +81,6 @@ function send(destination, payload) {
       const body = JSON.stringify(payload);
 
       // ── JMS / STOMP MESSAGE HEADERS ──────────────────────────────────
-      // HIGH-CARDINALITY WARNING: messaging.message_id is unbounded.
-      // Use it on spans and logs only — never as a DogStatsD metric tag.
-      // Docs: https://docs.datadoghq.com/tagging/assigning_tags/
-      //
       // jms.correlation_id carries the payment_id as a business-level
       // correlation key so the consumer can link its logs to the
       // originating payment without querying a database.
@@ -102,8 +90,6 @@ function send(destination, payload) {
         "content-type": "application/json",
         "content-length": Buffer.byteLength(body),
         "jms-correlation-id": payload.payment_id || "",
-        // DSM context is injected here automatically by dd-trace when
-        // DD_DATA_STREAMS_ENABLED=true (Step 10).
       };
 
       const frame = client.send(headers);

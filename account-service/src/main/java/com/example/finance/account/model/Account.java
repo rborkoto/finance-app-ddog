@@ -6,13 +6,9 @@ import java.time.Instant;
 /**
  * Represents a financial account in the ledger.
  *
- * Finance domain tags to attach to spans/logs when handling this entity:
- *   account.tier    → retail | premium | corporate  (SLA-aware alerting)
- *   payment.currency → EUR | USD | GBP             (regulatory / regional analysis)
- *
- * WARNING — High cardinality: never use `id` or `ownerId` as a span tag directly.
- * Tag with bucketed / categorical values only.
- * Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
+ * Finance domain attributes:
+ *   tier     → retail | premium | corporate  (SLA-aware handling)
+ *   currency → EUR | USD | GBP               (regulatory / regional analysis)
  */
 public class Account {
 
@@ -22,9 +18,8 @@ public class Account {
     private String currency;
 
     /**
-     * Account tier drives SLA alerting in Datadog.
+     * Account tier drives SLA-aware handling.
      * Valid values: retail | premium | corporate
-     * Used as span tag: account.tier
      */
     private String tier;
 

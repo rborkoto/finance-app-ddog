@@ -9,18 +9,11 @@ Bucket thresholds:
   amount < 5_000   → medium (score 0.55)
   amount >= 5_000  → high   (score 0.90)
 
-HIGH-CARDINALITY WARNING
-────────────────────────
-The raw score float (e.g. 0.2341…) must NEVER be used as a span tag or
-metric tag value. A unique float per transaction produces an unbounded
-number of tag values, which explodes Datadog's index cardinality and
-incurs additional cost.
-
-Always use `bucket` (a bounded three-value enum) as the tag:
-  span.set_tag("fraud.score_bucket", result["bucket"])   ← correct
-  span.set_tag("fraud.raw_score", result["score"])        ← WRONG in production
-
-Reference: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
+NOTE
+────
+Prefer `bucket` (a bounded three-value enum) over the raw score float when
+grouping or aggregating results. A unique float per transaction produces an
+unbounded number of distinct values.
 """
 
 from __future__ import annotations
@@ -57,8 +50,8 @@ def score(transaction: dict[str, Any]) -> dict[str, Any]:
     Returns
     -------
     dict with keys:
-      ``score``  — float in [0, 1]; suitable for storage but NOT for tagging.
-      ``bucket`` — str: "low" | "medium" | "high"; use this as tag value.
+      ``score``  — float in [0, 1]; suitable for storage.
+      ``bucket`` — str: "low" | "medium" | "high"; use for grouping.
 
     Examples
     --------

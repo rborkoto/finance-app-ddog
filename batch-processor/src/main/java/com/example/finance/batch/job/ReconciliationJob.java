@@ -1,6 +1,5 @@
 package com.example.finance.batch.job;
 
-import com.example.finance.batch.listener.DatadogJobListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
@@ -26,17 +25,6 @@ import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;
 
-// ── DATADOG INSTRUMENTATION ───────────────────────────────────────────────────
-// No imports needed here for basic APM — the Java agent auto-instruments
-// Spring Batch Job and Step execution automatically.
-//
-// For Data Jobs Monitoring (Step 11) and custom span tagging, see:
-//   DatadogJobListener.java — beforeJob/afterJob span tag injection
-//   ReconciliationStepConfig.java — @Trace on the tasklet
-//
-// Docs: https://docs.datadoghq.com/data_jobs/java/
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Spring Batch configuration for the nightly End-of-Day Reconciliation Job.
  *
@@ -45,16 +33,9 @@ import java.util.Map;
  *
  * <p>Scheduled to run nightly at 23:00 UTC (configurable in application.yml).
  * JobParameters include {@code run.date} to make each nightly run uniquely
- * identifiable — essential for the Data Jobs Monitoring run history timeline.
+ * identifiable.
  *
  * <p>Chunk size: 100 records — tune based on memory and DB throughput.
- *
- * Finance span tags applied (when Datadog agent is active):
- * <ul>
- *   <li>{@code job.name} = "end-of-day-reconciliation"</li>
- *   <li>{@code job.batch_size} = 100</li>
- *   <li>{@code job.status} = "completed" | "failed" | "partial"</li>
- * </ul>
  */
 @Configuration
 public class ReconciliationJob {
@@ -75,9 +56,6 @@ public class ReconciliationJob {
 
     @Autowired
     private DataSource dataSource;
-
-    @Autowired
-    private DatadogJobListener datadogJobListener;
 
     // ── SCHEDULER ─────────────────────────────────────────────────────────────
     // Uncomment the @Scheduled annotation to enable nightly execution.
@@ -100,15 +78,12 @@ public class ReconciliationJob {
     @Bean
     public Job reconciliationBatchJob() {
         return new JobBuilder(JOB_NAME, jobRepository)
-                .listener(datadogJobListener)
                 .start(reconciliationStep())
                 .build();
     }
 
     // ── STEP ─────────────────────────────────────────────────────────────────
     // Chunk-oriented step: reader → processor → writer, 100 records per commit.
-    // Auto-instrumented by dd-java-agent as a 'batch.step' span when the agent
-    // is attached. No code changes are needed here to see the step in APM.
     @Bean
     public Step reconciliationStep() {
         return new StepBuilder("reconciliation-step", jobRepository)
@@ -124,10 +99,8 @@ public class ReconciliationJob {
     // Cursor-based streaming avoids loading all rows into memory — important
     // for high-volume end-of-day runs processing thousands of transactions.
     //
-    // ⚠ DATADOG DBM NOTE: When DBM is enabled (Step 9), every JDBC query here
-    // will appear in Databases > Query Samples with explain plans attached.
     // Ensure the WHERE clause uses indexed columns (status, settled_at) to
-    // avoid full-table scans surfaced by DBM's slow query detection.
+    // avoid full-table scans.
     // ─────────────────────────────────────────────────────────────────────────
     @Bean
     public JdbcCursorItemReader<Map<String, Object>> reconciliationItemReader() {
@@ -157,15 +130,6 @@ public class ReconciliationJob {
     // ── ITEM PROCESSOR ────────────────────────────────────────────────────────
     // Stub: compares each transaction row against an external ledger entry.
     // In production, this would call an external reconciliation API.
-    //
-    // ── DATADOG INSTRUMENTATION ───────────────────────────────────────────────
-    // Wrap the external ledger call in a manual span to capture its latency
-    // separately from the overall step. See ReconciliationStepConfig for the
-    // @Trace annotation pattern.
-    //
-    // import datadog.trace.api.Trace;
-    //
-    // @Trace(operationName = "ledger.reconcile", resourceName = "external-ledger")
     // ─────────────────────────────────────────────────────────────────────────
     @Bean
     public ItemProcessor<Map<String, Object>, Map<String, Object>> reconciliationItemProcessor() {
@@ -173,10 +137,6 @@ public class ReconciliationJob {
             // Stub: flag discrepancies — in production, compare with external ledger
             log.debug("Processing transaction id={} amount={} currency={}",
                     item.get("id"), item.get("amount"), item.get("currency"));
-
-            // ⚠ HIGH-CARDINALITY WARNING: Never tag with raw transaction.id in spans.
-            // Use job.name and job.batch_size for cardinality-safe aggregation.
-            // Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
 
             item.put("reconciled", true);
             item.put("discrepancy", false);

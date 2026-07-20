@@ -10,14 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
-	"github.com/DataDog/dd-trace-go/v2/profiler"
 	"github.com/go-stomp/stomp/v3"
 )
-
-//
-//
-//
 
 const (
 	alertQueue       = "/queue/alert.queue"
@@ -30,49 +24,17 @@ type AlertMessage struct {
 	AccountID     string `json:"account_id"`
 	Channel       string `json:"channel"`        // "email" or "sms"
 	CorrelationID string `json:"correlation_id"` // jms.correlation_id — business-level trace key
-	// ⚠️  HIGH CARDINALITY WARNING: do NOT log or tag raw account numbers, IBANs,
-	// card numbers, or transaction amounts. Tag with IDs only.
-	// Ref: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
+	// HIGH CARDINALITY WARNING: do NOT log raw account numbers, IBANs,
+	// card numbers, or transaction amounts. Log IDs only.
 }
-
-// NOTE: no DogStatsD client. finance.notification.sent / .dispatch_time are
-// generated from the alert.send span (span-based metrics in
-// deploy/terraform/datadog), keyed off @notification.channel / @notification.event_type.
 
 func main() {
 	// ── Structured JSON logging (stdlib log/slog) ─────────────────────────────
-	// All log lines are JSON so Datadog Log Management can parse them without a
-	// custom pipeline processor. The "dd.trace_id" and "dd.span_id" fields are
-	// injected automatically once APM log correlation is enabled (Step 4).
+	// All log lines are JSON so they can be parsed without a custom pipeline.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
-
-	//
-	tracer.Start(
-		tracer.WithService(getEnv("DD_SERVICE", "notification-service")),
-		tracer.WithEnv(getEnv("DD_ENV", "local")),
-		tracer.WithServiceVersion(getEnv("DD_VERSION", "dev")),
-		tracer.WithAgentAddr(getEnv("DD_AGENT_HOST", "datadog-agent")+":8126"),
-		tracer.WithRuntimeMetrics(),
-	)
-	defer tracer.Stop()
-
-	//
-	if err := profiler.Start(
-		profiler.WithService(getEnv("DD_SERVICE", "notification-service")),
-		profiler.WithEnv(getEnv("DD_ENV", "local")),
-		profiler.WithVersion(getEnv("DD_VERSION", "dev")),
-		profiler.WithProfileTypes(
-			profiler.CPUProfile,
-			profiler.HeapProfile,
-			profiler.GoroutineProfile,
-		),
-	); err != nil {
-		slog.Error("profiler failed to start", "error", err)
-	}
-	defer profiler.Stop()
 
 	brokerURL := getEnv("ACTIVEMQ_URL", defaultBrokerURL)
 
@@ -176,8 +138,6 @@ func processMessage(conn *stomp.Conn, msg *stomp.Message) {
 		"account_id", alert.AccountID,
 		"channel", alert.Channel,
 		"correlation_id", alert.CorrelationID,
-		// dd.trace_id and dd.span_id are injected here automatically
-		// once APM log correlation is enabled (Step 4 in README).
 	)
 
 	sendNotification(alert)
@@ -190,18 +150,6 @@ func processMessage(conn *stomp.Conn, msg *stomp.Message) {
 // sendNotification stubs the email / SMS dispatch logic.
 // In production this would call an SMTP relay or SMS gateway API.
 func sendNotification(alert AlertMessage) {
-	//
-	span, _ := tracer.StartSpanFromContext(
-		context.Background(), "alert.send",
-		tracer.ResourceName(alert.EventType),
-		tracer.Tag("notification.channel", alert.Channel),
-		tracer.Tag("notification.event_type", alert.EventType),
-		tracer.Tag("account.id", alert.AccountID),
-		tracer.Tag("jms.correlation_id", alert.CorrelationID),
-		tracer.Tag("messaging.destination", "alert.queue"),
-	)
-	defer span.Finish()
-
 	start := time.Now()
 
 	switch alert.Channel {
@@ -237,10 +185,6 @@ func sendNotification(alert AlertMessage) {
 		"duration_ms", duration,
 		"correlation_id", alert.CorrelationID,
 	)
-
-	// Metrics (finance.notification.sent / .dispatch_time) are generated from
-	// the alert.send span above via span-based metrics in deploy/terraform/datadog
-	// — no DogStatsD emission here.
 }
 
 // connectSTOMP establishes a STOMP connection to the ActiveMQ Artemis broker.

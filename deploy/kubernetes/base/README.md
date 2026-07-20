@@ -1,8 +1,7 @@
 # Kubernetes Base Deployment — Finance Sample App
 
 This directory contains a complete, self-contained Kubernetes deployment of the
-Finance sample app **without any Datadog dependency**. It is the recommended
-starting point before progressively adding observability.
+Finance sample app.
 
 ---
 
@@ -26,7 +25,7 @@ base/
     ├── notification-service.yaml # Go async notifier (JMS consumer, no HTTP)
     ├── batch-processor.yaml   # Java/Spring Batch nightly reconciliation (no HTTP)
     ├── frontend.yaml          # nginx dashboard — NodePort :30080
-    └── traffic-generator.yaml # In-cluster continuous load generator (no Datadog injection)
+    └── traffic-generator.yaml # In-cluster continuous load generator
 ```
 
 ---
@@ -206,16 +205,4 @@ ActiveMQ and Keycloak use **TCP probes** (not HTTP) because:
 make undeploy-k8s
 # Removes the entire 'finance' namespace and all its resources.
 # Persistent volumes (postgres-data) are also deleted.
-```
-
----
-
-## Adding Datadog observability
-
-See `../datadog/README.md` for the full step-by-step guide to add the Datadog
-Agent, enable APM, log collection, Database Monitoring, and Data Streams Monitoring.
-
-```bash
-# After completing the prerequisites in ../datadog/README.md:
-make deploy-k8s-dd
 ```

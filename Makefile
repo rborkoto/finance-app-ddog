@@ -1,10 +1,7 @@
-# Finance Sample App — Datadog Observability
+# Finance Sample App
 #
-# DD_VERSION is auto-set to the git short SHA for Deployment Tracking.
-# This ties every container image to an exact commit so that anomalies
-# surfaced in Datadog APM, Profiler, or Data Jobs Monitoring can be
-# linked back to a specific release via the Deployment Tracking UI.
-# Docs: https://docs.datadoghq.com/tracing/deployment_tracking/
+# DD_VERSION is auto-set to the git short SHA and embedded in image tags.
+# This ties every container image to an exact commit for traceability.
 #
 # Run 'make help' for the full list of targets with one-line descriptions.
 # The end-to-end workflows below show the recommended target ordering.
@@ -16,9 +13,8 @@
 #   make tf-configure-kubectl           # configure kubectl
 #   make build-ecr                      # build & push images for linux/amd64
 #   make deploy-k8s-eks                 # deploy app (includes gp3 StorageClass)
-#   make deploy-k8s-dd                  # deploy Datadog Agent (auto-detects EKS)
 
-.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks deploy-k8s-dd undeploy-k8s teardown instrument uninstrument create-dd-secret dbm-setup tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws dd-secrets tf-plan-dd tf-apply-dd tf-destroy-dd help
+.PHONY: all build build-ecr version test test-traffic deploy-k8s deploy-k8s-eks undeploy-k8s teardown tf-plan-aws tf-apply-aws tf-configure-kubectl frontend-url tf-destroy-aws help
 
 # Resolve DD_VERSION once so all targets share the same value.
 # Falls back to 'dev' when git is not available (e.g. in a bare CI image).
@@ -27,17 +23,6 @@ DD_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo 'dev')
 # ── Reusable canned recipes ───────────────────────────────────────────
 # Expanded inline inside recipes with $(macro_name). Each keeps its own
 # backslash continuations so it slots into a single recipe shell.
-
-# Install/upgrade the Datadog Operator via Helm (idempotent).
-define install_dd_operator
-	helm repo add datadog https://helm.datadoghq.com 2>/dev/null || true; \
-	helm repo update datadog 2>/dev/null; \
-	helm upgrade --install datadog-operator datadog/datadog-operator \
-		--namespace datadog --create-namespace \
-		--set watchNamespaces="{datadog,finance}" \
-		--set maximumGoroutines=800 \
-		--wait --timeout 120s
-endef
 
 # Create the keycloak-tls Secret (self-signed) unless it already exists.
 define ensure_keycloak_tls
@@ -82,12 +67,6 @@ define create_frontend_cm
 		-n finance --dry-run=client -o yaml | kubectl apply -f -; \
 	rm -f /tmp/finance-index.html
 endef
-
-# Print the "redeploy to activate" hint shared by instrument/uninstrument.
-define print_redeploy_hint
-	echo "   Local: make build && load images into k3s && kubectl rollout restart deployment -n finance"; \
-	echo "   EKS:   make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance"
-endef
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -95,7 +74,7 @@ all: build
 
 ## help: Show this help message (all available make targets with descriptions).
 help:
-	@echo "Finance Sample App - Datadog Observability"
+	@echo "Finance Sample App"
 	@echo ""
 	@echo "Usage: make <target>"
 	@echo ""
@@ -109,91 +88,9 @@ help:
 		}' $(MAKEFILE_LIST)
 	@echo ""
 
-## version: Print the DD_VERSION that will be embedded in image labels and env vars.
+## version: Print the DD_VERSION that will be embedded in image tags.
 version:
 	@echo "DD_VERSION=$(DD_VERSION)"
-
-## instrument: Uncomment all Datadog instrumentation blocks across all services.
-##             Applies unified diff patches — fully reversible with make uninstrument.
-##             Idempotent: a second run is a clean no-op (tracked via .instrumentation-applied).
-##             See INSTRUMENTATION.md for what each patch enables.
-##
-##             RUM PREREQUISITE: run 'make tf-apply-dd' FIRST. The RUM applicationId
-##               and clientToken are created by the Datadog Terraform module; this
-##               target injects them into frontend-stub/index.html. Without them the
-##               frontend RUM block keeps its placeholders (a ⚠ warning is printed) —
-##               all other (backend) instrumentation still applies. Just re-run
-##               'make instrument' after 'make tf-apply-dd' to fill in RUM.
-##
-##             After patching, redeploy:
-##               Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
-##               EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
-instrument:
-	@if [ -f .instrumentation-applied ]; then \
-		echo "Instrumentation already enabled. Run 'make uninstrument' first to reapply."; \
-	else \
-		echo "Applying instrumentation patches..."; \
-		for p in scripts/patches/*.patch; do \
-			svc=$$(basename $$p .patch); \
-			echo "  $$svc"; \
-			patch -p1 --forward -s < $$p || true; \
-		done; \
-		touch .instrumentation-applied; \
-		echo ""; \
-		echo "==> Injecting RUM credentials from Terraform output..."; \
-		TF_DD_DIR="$(CURDIR)/deploy/terraform/datadog"; \
-		if terraform -chdir="$$TF_DD_DIR" output rum_application_id >/dev/null 2>&1; then \
-			RUM_APP_ID=$$(terraform -chdir="$$TF_DD_DIR" output -raw rum_application_id 2>/dev/null); \
-			RUM_TOKEN=$$(terraform -chdir="$$TF_DD_DIR" output -raw rum_client_token 2>/dev/null); \
-			if [ -n "$$RUM_APP_ID" ] && [ -n "$$RUM_TOKEN" ]; then \
-				sed -i '' \
-					"s|'REPLACE_WITH_APPLICATION_ID'|'$$RUM_APP_ID'|g" \
-					frontend-stub/index.html; \
-				sed -i '' \
-					"s|'REPLACE_WITH_CLIENT_TOKEN'|'$$RUM_TOKEN'|g" \
-					frontend-stub/index.html; \
-				echo "  ✓ RUM credentials injected (app_id: $$RUM_APP_ID)"; \
-			else \
-				echo "  ⚠  RUM output is empty — run 'make tf-apply-dd' first, then re-run 'make instrument'"; \
-					fi; \
-				else \
-					echo "  ⚠  Terraform output not available — run 'make tf-apply-dd' first to create the RUM app."; \
-					echo "     RUM block left with placeholders. Re-run 'make instrument' after 'make tf-apply-dd'."; \
-				fi; \
-				echo ""; \
-				echo "✓ Instrumentation enabled. Redeploy to activate:"; \
-				$(print_redeploy_hint); \
-			fi
-
-## uninstrument: Re-comment all Datadog instrumentation blocks (reverse of make instrument).
-##               Restores every file to its original commented-out state.
-##
-##               After patching, redeploy:
-##                 Local:  make build && load images into k3s && kubectl rollout restart deployment -n finance
-##                 EKS:    make build-ecr && make deploy-k8s-eks && kubectl rollout restart deployment -n finance
-uninstrument:
-	@if [ ! -f .instrumentation-applied ]; then \
-		echo "Instrumentation is not currently enabled (nothing to reverse)."; \
-	else \
-		echo "Reversing instrumentation patches..."; \
-		for p in scripts/patches/*.patch; do \
-			svc=$$(basename $$p .patch); \
-			echo "  $$svc"; \
-			patch -p1 --reverse -s < $$p || true; \
-		done; \
-		rm -f .instrumentation-applied; \
-		echo "==> Restoring RUM credential placeholders..."; \
-		sed -i '' \
-			"s|'[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}'|'REPLACE_WITH_APPLICATION_ID'|g" \
-			frontend-stub/index.html; \
-		sed -i '' \
-			"s|clientToken:             '[a-z0-9]*'|clientToken:             'REPLACE_WITH_CLIENT_TOKEN'|g" \
-			frontend-stub/index.html; \
-		echo "  ✓ RUM placeholders restored"; \
-		echo ""; \
-		echo "✓ Instrumentation disabled. Redeploy to deactivate:"; \
-		$(print_redeploy_hint); \
-	fi
 
 ## build: Build all service images for the local platform.
 ##        Images are tagged finance-sample-app-<service>:latest and :<DD_VERSION> (git short SHA).
@@ -264,7 +161,7 @@ test-traffic:
 
 
 
-## deploy-k8s: Deploy the Finance app to Kubernetes without Datadog.
+## deploy-k8s: Deploy the Finance app to Kubernetes.
 ##             Creates the 'finance' namespace and all infrastructure + application services.
 ##             Prerequisites:
 ##               1. make build        — build all service images
@@ -294,11 +191,10 @@ deploy-k8s:
 	@$(create_traffic_cm)
 	@echo "Creating frontend dashboard ConfigMap (injecting KEYCLOAK_PUBLIC_URL)..."
 	@$(create_frontend_cm)
-	@echo "Applying application services (pinning DD version=$(DD_VERSION))..."
+	@echo "Applying application services..."
 	@for f in account-service batch-processor fraud-detection frontend gateway-api notification-service transaction-service traffic-generator; do \
 		echo "  → $$f"; \
-		DD_VERSION=$(DD_VERSION) bash scripts/pin-dd-version.sh \
-			< deploy/kubernetes/base/services/$$f.yaml | kubectl apply -f -; \
+		kubectl apply -f deploy/kubernetes/base/services/$$f.yaml; \
 	done
 	@echo ""
 	@echo "✓  Deployed. Check pod status:"
@@ -333,10 +229,8 @@ deploy-k8s-eks:
 	@$(ensure_keycloak_tls)
 	@echo "Creating frontend dashboard ConfigMap (injecting current KEYCLOAK_PUBLIC_URL)..."
 	@$(create_frontend_cm)
-	@echo "Applying EKS overlay (ECR images + gp3 StorageClass + infrastructure + services; pinning DD version=$(DD_VERSION))..."
-	kubectl kustomize deploy/kubernetes/overlays/eks \
-		| DD_VERSION=$(DD_VERSION) bash scripts/pin-dd-version.sh \
-		| kubectl apply -f -
+	@echo "Applying EKS overlay (ECR images + gp3 StorageClass + infrastructure + services)..."
+	kubectl apply -k deploy/kubernetes/overlays/eks
 	@echo "Waiting for PostgreSQL to be ready..."
 	kubectl rollout status statefulset/postgres-ledger -n finance --timeout=120s
 	@echo ""
@@ -353,93 +247,36 @@ deploy-k8s-eks:
 	@echo "     kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html -n finance --dry-run=client -o yaml | kubectl apply -f -"
 	@echo "     kubectl rollout restart deployment/keycloak deployment/frontend -n finance"
 
-## deploy-k8s-dd: Deploy the Datadog Agent. Auto-detects local vs EKS.
-##               Run AFTER 'make deploy-k8s' (local) or 'make deploy-k8s-eks' (EKS).
-##               'create-dd-secret' runs first as a prerequisite — no separate secret
-##               step needed. Keeping it a prerequisite (rather than a $(MAKE) call
-##               inside the recipe) means 'make -n deploy-k8s-dd' is a true dry-run.
-##
-##               LOCAL: reads DD_API_KEY + DD_APP_KEY from .env (via create-dd-secret),
-##                      installs Operator (if absent), applies the Agent config.
-##
-##               EKS:   fetches keys from AWS Secrets Manager (via create-dd-secret,
-##                      requires valid SSO session + staging.tfvars), installs Operator
-##                      via Helm, applies the Bottlerocket-patched Agent overlay.
-deploy-k8s-dd: create-dd-secret dbm-setup
-	@echo "==> Detecting cluster environment..."
-	@IS_EKS=$$(kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' 2>/dev/null | grep -c 'aws:///') ; \
-	IS_BOTTLEROCKET=$$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.osImage}' 2>/dev/null | grep -ic 'bottlerocket') ; \
-	if [ "$$IS_EKS" -gt 0 ]; then \
-		echo "    Detected: EKS$$([ $$IS_BOTTLEROCKET -gt 0 ] && echo ' + Bottlerocket' || echo '')"; \
-		echo "==> Installing Datadog Operator via Helm (idempotent)..."; \
-		$(install_dd_operator); \
-		echo "==> Applying EKS agent config (Kustomize overlay — inherits full base spec)..."; \
-		kubectl apply -k deploy/kubernetes/overlays/eks-datadog; \
-	else \
-		echo "    Detected: local cluster"; \
-		echo "==> Checking Datadog Operator is installed and running..."; \
-		if ! kubectl get crd datadogagents.datadoghq.com >/dev/null 2>&1; then \
-			echo "    CRD not found — installing Datadog Operator via Helm..."; \
-			$(install_dd_operator); \
-		elif ! kubectl get deployment datadog-operator -n datadog >/dev/null 2>&1 || \
-			[ "$$(kubectl get deployment datadog-operator -n datadog -o jsonpath='{.status.availableReplicas}' 2>/dev/null)" != "1" ]; then \
-			echo "    CRD exists but Operator Deployment is missing or not available"; \
-			echo "    (this happens after 'make teardown', which removes the Helm release"; \
-			echo "     but not the cluster-scoped CRD) — (re)installing via Helm..."; \
-			$(install_dd_operator); \
-		else \
-			echo "    Datadog Operator already installed and running — skipping"; \
-		fi; \
-		echo "==> Applying local cluster config (Kustomize base)..."; \
-		kubectl apply -k deploy/kubernetes/datadog/agent; \
-	fi
-	@kubectl apply -f deploy/kubernetes/datadog/checks/activemq-check.yaml
-	@kubectl apply -f deploy/kubernetes/datadog/checks/postgres-check.yaml
-	@echo ""
-	@echo "✓  Datadog Agent deploying. Verify with:"
-	@echo "     kubectl get datadogagent -n datadog"
-	@echo "     kubectl get daemonset datadog -n datadog"
-	@echo "     kubectl get deployment datadog-cluster-agent -n datadog"
-
 ## undeploy-k8s: Remove all Finance app resources from Kubernetes (namespaces only).
 ##               Does NOT delete persistent data — use 'make teardown' for a full reset.
 undeploy-k8s:
 	kubectl delete namespace finance --ignore-not-found
-	kubectl delete namespace datadog --ignore-not-found
 	# gp3 is cluster-scoped (not namespaced) — must be deleted separately
 	kubectl delete storageclass gp3 --ignore-not-found
 
 ## teardown: Full reset — removes all K8s resources AND cleans up persistent data.
 ##           Deletes:
 ##             - finance namespace (all app pods, services, configmaps)
-##             - datadog namespace (Agent, Operator, Cluster Agent)
-##             - Datadog Operator Helm release
 ##             - Any leftover Docker volumes (postgres, redis, artemis, keycloak)
 ##             - Port-forward processes
 ##           Safe to run even if some resources are already gone.
 ##
 ##           After teardown, start fresh with:
-##             make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd
+##             make build && make deploy-k8s
 teardown:
 	@echo "==> Killing any stray kubectl port-forward processes..."
 	@pkill -f 'kubectl port-forward' 2>/dev/null || true
-	@echo "==> Removing Datadog Agent CRD instance..."
-	@kubectl delete datadogagent datadog -n datadog --ignore-not-found 2>&1 || true
 	@echo "==> Deleting finance namespace (app pods, PVCs, services)..."
 	@kubectl delete namespace finance --ignore-not-found 2>&1
-	@echo "==> Deleting datadog namespace (Agent DaemonSet, Cluster Agent)..."
-	@kubectl delete namespace datadog --ignore-not-found 2>&1
-	@echo "==> Uninstalling Datadog Operator Helm release..."
-	@helm uninstall datadog-operator -n datadog 2>/dev/null || true
 	@echo "==> Removing leftover Docker volumes..."
-	@for vol in postgres-data redis-data artemis-data keycloak-data datadog-run; do \
+	@for vol in postgres-data redis-data artemis-data keycloak-data; do \
 		docker volume rm finance-sample-app_$$vol 2>/dev/null && echo "  removed finance-sample-app_$$vol" || true; \
 	done
 	@# gp3 is cluster-scoped (EKS only) — safe to ignore if not present
 	@kubectl delete storageclass gp3 --ignore-not-found 2>/dev/null || true
 	@echo ""
 	@echo "✓  Teardown complete. Cluster and data are clean."
-	@echo "   Start fresh: make build && make deploy-k8s && make create-dd-secret && make deploy-k8s-dd"
+	@echo "   Start fresh: make build && make deploy-k8s"
 
 ## deploy/terraform/aws/staging.tfvars: auto-created from staging.tfvars.example
 ##                                       on first use (self-heals a missing file
@@ -487,167 +324,3 @@ frontend-url:
 ##                   4. Runs terraform destroy for remaining resources (VPC, IAM)
 tf-destroy-aws:
 	bash scripts/aws-force-destroy.sh --yes
-
-
-
-## create-dd-secret: Create (or update) the datadog-secret K8s Secret in the datadog namespace.
-##                   AUTO-DETECTS the environment:
-##                     Local (Docker Desktop / kind / k3d / minikube): reads DD_API_KEY and DD_APP_KEY from .env
-##                     EKS:               fetches both keys from AWS Secrets Manager
-##                   Safe to re-run — uses --dry-run=client | kubectl apply (idempotent).
-##                   Run this BEFORE make deploy-k8s-dd.
-create-dd-secret:
-	@echo "==> Detecting cluster environment..."
-	@IS_EKS=$$(kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' 2>/dev/null | grep -c 'aws:///'); \
-	kubectl create namespace datadog --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null; \
-	if [ "$$IS_EKS" -gt 0 ]; then \
-		echo "    Detected: EKS — fetching keys from AWS Secrets Manager..."; \
-		AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-		if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
-		AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-		PROFILE_FLAG=$$([ -n "$$AWS_PROF" ] && echo "--profile $$AWS_PROF" || echo ''); \
-		DD_API_KEY=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/dd-api-key \
-			--query SecretString --output text \
-			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
-		DD_APP_KEY=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/dd-app-key \
-			--query SecretString --output text \
-			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null); \
-		DBM_PASSWORD=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/datadog-dbm-password \
-			--query SecretString --output text \
-			--region $$AWS_REGION $$PROFILE_FLAG 2>/dev/null || echo ''); \
-		if [ -z "$$DD_API_KEY" ] || [ "$$DD_API_KEY" = "REPLACE_ME" ]; then \
-			echo "ERROR: DD_API_KEY not found in Secrets Manager (finance-app/staging/dd-api-key)."; \
-			echo "       aws sso login --profile $$AWS_PROF  then re-run."; \
-			exit 1; \
-		fi; \
-		if [ -z "$$DD_APP_KEY" ] || [ "$$DD_APP_KEY" = "REPLACE_ME" ]; then \
-			echo "ERROR: DD_APP_KEY not found in Secrets Manager (finance-app/staging/dd-app-key)."; \
-			exit 1; \
-		fi; \
-	else \
-		echo "    Detected: local cluster — reading keys from .env..."; \
-		ENV_FILE=.env; \
-		if [ ! -f "$$ENV_FILE" ]; then \
-			echo "ERROR: $$ENV_FILE not found."; \
-			echo "       Copy .env.example to .env and fill in DD_API_KEY and DD_APP_KEY."; \
-			exit 1; \
-		fi; \
-		DD_API_KEY=$$(grep '^DD_API_KEY' $$ENV_FILE | cut -d= -f2 | tr -d '"' | tr -d "'"); \
-		DD_APP_KEY=$$(grep '^DD_APP_KEY' $$ENV_FILE | cut -d= -f2 | tr -d '"' | tr -d "'"); \
-		DBM_PASSWORD=$$(grep '^DATADOG_DBM_PASSWORD' $$ENV_FILE | cut -d= -f2 | tr -d '"' | tr -d "'" || echo ''); \
-		if [ -z "$$DD_API_KEY" ]; then \
-			echo "ERROR: DD_API_KEY not set in $$ENV_FILE."; exit 1; \
-		fi; \
-		if [ -z "$$DD_APP_KEY" ]; then \
-			echo "ERROR: DD_APP_KEY not set in $$ENV_FILE."; exit 1; \
-		fi; \
-	fi; \
-	DBM_FLAG=$$([ -n "$$DBM_PASSWORD" ] && echo "--from-literal dbm-password=$$DBM_PASSWORD" || echo ''); \
-	kubectl create secret generic datadog-secret \
-		--from-literal api-key="$$DD_API_KEY" \
-		--from-literal app-key="$$DD_APP_KEY" \
-		$$DBM_FLAG \
-		--namespace datadog \
-		--dry-run=client -o yaml | kubectl apply -f -; \
-	echo ""; \
-	echo "✓  datadog-secret created/updated in namespace datadog"; \
-	echo "   Keys stored: api-key, app-key$$([ -n "$$DBM_PASSWORD" ] && echo ', dbm-password' || echo ' (dbm-password not set)')"; \
-	echo "   Verify: kubectl get secret datadog-secret -n datadog -o jsonpath='{.data}' | python3 -m json.tool"
-
-## dbm-setup: Create/refresh the Datadog DBM role in PostgreSQL (query metrics + explain plans).
-##            Runs scripts/dbm-setup.sql in the postgres-ledger pod. Idempotent.
-##            Password source (in order): the datadog-secret 'dbm-password' key, else
-##            DATADOG_DBM_PASSWORD in .env. If neither is set, DBM setup is skipped
-##            (DBM stays off). Auto-run by 'make deploy-k8s-dd'; requires postgres-ledger running.
-dbm-setup:
-	@DBM_PASSWORD=$$(kubectl get secret datadog-secret -n datadog -o jsonpath='{.data.dbm-password}' 2>/dev/null | base64 -d 2>/dev/null); \
-	if [ -z "$$DBM_PASSWORD" ] && [ -f .env ]; then \
-		DBM_PASSWORD=$$(grep '^DATADOG_DBM_PASSWORD=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
-	fi; \
-	if [ -z "$$DBM_PASSWORD" ]; then \
-		echo "==> dbm-setup: no DBM password (datadog-secret dbm-password / DATADOG_DBM_PASSWORD) — skipping (DBM stays off)."; \
-	elif ! kubectl get statefulset postgres-ledger -n finance >/dev/null 2>&1; then \
-		echo "⚠  dbm-setup: postgres-ledger not found in namespace finance — run 'make deploy-k8s' first. Skipping."; \
-	else \
-		echo "==> dbm-setup: creating/refreshing Datadog DBM role in postgres-ledger..."; \
-		if kubectl exec -i -n finance statefulset/postgres-ledger -- \
-			psql -U finance -d ledger -v ON_ERROR_STOP=1 -v dbm_password="$$DBM_PASSWORD" -f - < scripts/dbm-setup.sql; then \
-			echo "✓ DBM role 'datadog' ready (pg_monitor + pg_stat_statements + explain_statement)."; \
-		else \
-			echo "⚠  dbm-setup: SQL failed — check postgres-ledger is Ready. DBM will not authenticate until this succeeds."; \
-		fi; \
-	fi
-
-## dd-secrets: Print eval-ready 'export TF_VAR_datadog_api_key=...' commands for use with
-##             tf-apply-dd / tf-plan-dd. Resolves the keys in priority order:
-##               1. AWS Secrets Manager  — if an SSO session for aws_profile is active
-##                                          AND the finance-app/staging secrets exist
-##               2. .env                 — DD_API_KEY / DD_APP_KEY (local fallback)
-##             The .env fallback also kicks in when an AWS session is active but the
-##             secrets aren't in Secrets Manager (the common local case), so this
-##             works locally without needing to 'aws sso logout' first.
-##             Usage: eval "$(make dd-secrets)"
-dd-secrets:
-	@AWS_PROF=$$(grep '^aws_profile' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-	API_KEY=""; APP_KEY=""; SRC=""; \
-	if [ -n "$$AWS_PROF" ] && aws sts get-caller-identity --profile "$$AWS_PROF" >/dev/null 2>&1; then \
-		AWS_REGION=$$(grep '^aws_region' deploy/terraform/aws/staging.tfvars 2>/dev/null | sed 's/.*=[ ]*//' | tr -d '"' | tr -d ' '); \
-		if [ -z "$$AWS_REGION" ]; then AWS_REGION=eu-west-1; fi; \
-		API_KEY=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/dd-api-key \
-			--query SecretString --output text \
-			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
-		APP_KEY=$$(aws secretsmanager get-secret-value \
-			--secret-id finance-app/staging/dd-app-key \
-			--query SecretString --output text \
-			--region $$AWS_REGION --profile "$$AWS_PROF" 2>/dev/null); \
-		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then \
-			SRC="AWS Secrets Manager (profile $$AWS_PROF, region $$AWS_REGION)"; \
-		else \
-			echo "# dd-secrets: AWS session active but finance-app/staging secrets not found -- falling back to .env" >&2; \
-			API_KEY=""; APP_KEY=""; \
-		fi; \
-	fi; \
-	if { [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; } && [ -f .env ]; then \
-		API_KEY=$$(grep '^DD_API_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
-		APP_KEY=$$(grep '^DD_APP_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
-		if [ -n "$$API_KEY" ] && [ -n "$$APP_KEY" ]; then SRC=".env"; fi; \
-	fi; \
-	if [ -z "$$API_KEY" ] || [ -z "$$APP_KEY" ]; then \
-		echo "# ERROR: could not resolve Datadog keys." >&2; \
-		echo "#   Local: cp .env.example .env && set DD_API_KEY / DD_APP_KEY" >&2; \
-		echo "#   EKS:   aws sso login --profile $$AWS_PROF  (and ensure finance-app/staging/dd-*-key secrets exist)" >&2; \
-		exit 1; \
-	fi; \
-	echo "# dd-secrets: sourced Datadog keys from $$SRC" >&2; \
-	echo "export TF_VAR_datadog_api_key=\"$$API_KEY\""; \
-	echo "export TF_VAR_datadog_app_key=\"$$APP_KEY\""
-
-## tf-plan-dd: Plan the Datadog observability resources (index, pipeline, monitors, dashboard).
-##             Requires TF_VAR_datadog_api_key and TF_VAR_datadog_app_key env vars.
-##             Easiest way to set them: eval "$(make dd-secrets)"
-TF_DD_VARS ?= -var-file=staging.tfvars
-## deploy/terraform/datadog/staging.tfvars: auto-created from staging.tfvars.example
-##                                           on first use -- self-heals a missing
-##                                           file instead of failing with a raw
-##                                           "Failed to read variables file" error.
-deploy/terraform/datadog/staging.tfvars:
-	@cp deploy/terraform/datadog/staging.tfvars.example $@
-	@echo "==> Created $@ from staging.tfvars.example"
-	@echo "    Edit it with your datadog_site / cluster_name / synthetic_target_base_url, then re-run."
-
-tf-plan-dd: deploy/terraform/datadog/staging.tfvars
-	cd deploy/terraform/datadog && terraform init && terraform plan $(TF_DD_VARS)
-
-## tf-apply-dd: Apply the Datadog resources (index, pipeline, monitors, dashboard).
-##              WARNING: creates/updates live Datadog configuration.
-tf-apply-dd: deploy/terraform/datadog/staging.tfvars
-	cd deploy/terraform/datadog && terraform init && terraform apply -auto-approve $(TF_DD_VARS)
-
-## tf-destroy-dd: Destroy all Datadog resources created by this Terraform module.
-##                WARNING: deletes the log index (and all indexed logs), monitors, dashboard, SLOs.
-tf-destroy-dd: deploy/terraform/datadog/staging.tfvars
-	cd deploy/terraform/datadog && terraform init && terraform destroy -auto-approve $(TF_DD_VARS)

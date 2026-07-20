@@ -13,22 +13,9 @@ WORKDIR /app
 RUN apk add --no-cache git
 
 COPY go.mod go.sum* ./
-# go mod tidy resolves any new dependencies added by the instrumentation patch
-# (e.g. dd-trace-go/v2). go.sum may not include them until tidy is run.
-# GONOSUMCHECK=* prevents checksum failures when go.sum is stale or missing.
-RUN GONOSUMCHECK=* GOFLAGS=-mod=mod go mod tidy && go mod download
+RUN GOFLAGS=-mod=mod go mod download
 COPY . .
-RUN GONOSUMCHECK=* GOFLAGS=-mod=mod CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /notification-service .
-
-# ── DATADOG INSTRUMENTATION — Orchestrion build (alternative to standard build) ──
-# Replace the RUN go build step above with the block below to use Orchestrion
-# for automatic compile-time APM instrumentation.
-# Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/dd_libraries/go/
-#
-# RUN go install github.com/DataDog/orchestrion@latest && \
-#     CGO_ENABLED=0 GOOS=linux orchestrion go build \
-#         -trimpath -ldflags="-s -w" -o /notification-service .
-# ──────────────────────────────────────────────────────────────────────────────
+RUN GOFLAGS=-mod=mod CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /notification-service .
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM alpine:latest
@@ -40,19 +27,11 @@ WORKDIR /app
 
 COPY --from=builder /notification-service /app/notification-service
 
-# ── DATADOG INSTRUMENTATION — dd-java-agent equivalent note ──────────────────
-# Go services do NOT require a separate agent JAR. APM is initialised in-process
-# via tracer.Start() (manual) or via Orchestrion (compile-time automatic).
-# The Datadog Agent sidecar/DaemonSet is still required for data ingestion.
-# See: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/
-# ─────────────────────────────────────────────────────────────────────────────
-
 # Non-root user for container security best practices.
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
 
 # Environment defaults — override at runtime via docker-compose or K8s ConfigMap/Secret.
-# DD_* variables are intentionally left unset here; supply them at deploy time.
 ENV ACTIVEMQ_URL="stomp://activemq-artemis:61613"
 
 EXPOSE 8083

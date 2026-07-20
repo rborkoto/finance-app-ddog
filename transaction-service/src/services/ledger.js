@@ -6,22 +6,12 @@ const pino = require("pino");
 const logger = pino({
   level: process.env.LOG_LEVEL || "info",
   base: {
-    service: process.env.DD_SERVICE || "transaction-service",
-    env: process.env.DD_ENV || "development",
-    version: process.env.DD_VERSION || "0.0.0",
+    service: process.env.SERVICE_NAME || "transaction-service",
+    env: process.env.APP_ENV || "development",
+    version: process.env.APP_VERSION || "0.0.0",
     component: "ledger",
   },
 });
-
-// ── APM: ledger.commit span (always on) ──────────────────────────
-// Custom span for ledger.commit.
-// This wraps the database write so the APM flame graph shows ledger
-// latency separately from fraud-queue publishing. Without this span,
-// both operations are folded into the parent payment.authorize span
-// and you cannot distinguish DB slowness from broker slowness.
-//
-const tracer = require("dd-trace");
-// ─────────────────────────────────────────────────────────────────────
 
 // ── PostgreSQL connection pool ────────────────────────────────────────
 // A single pool is created lazily on first use and reused for the life of
@@ -94,30 +84,6 @@ function getPool() {
  * @returns {Promise<{committed: boolean}>}
  */
 async function commit({ payment_id, amount, currency, account_id }) {
-  // ── APM: open the ledger.commit child span ─────────────────────
-  // Open a ledger.commit child span.
-  // Tags:
-  //   db.instance    → 'postgres-ledger' (matches DBM Agent config — enables
-  //                    the "View in DBM" button on this span in APM)
-  //   db.type        → 'postgresql'
-  //   db.statement   → parameterised SQL only (never interpolate values —
-  //                    prevents PII leakage into trace tags)
-  //
-  // Docs: https://docs.datadoghq.com/database_monitoring/connect_dbm_and_apm/
-  //
-  const span = tracer.startSpan("ledger.commit", {
-    childOf: tracer.scope().active(),
-    tags: {
-      "db.instance": "postgres-ledger",
-      "db.type": "postgresql",
-      "db.statement":
-        "INSERT INTO transactions (id, amount, currency, account_id, status) VALUES ($1,$2,$3,$4,$5)",
-      "resource.name": "ledger.commit",
-      "payment.currency": currency,
-    },
-  });
-  // ─────────────────────────────────────────────────────────────────────
-
   try {
     const db = getPool();
 
@@ -149,28 +115,12 @@ async function commit({ payment_id, amount, currency, account_id }) {
       "ledger.commit",
     );
 
-    span.finish();
-
     return { committed: true };
   } catch (err) {
     logger.error(
       { err, payment_id, "db.instance": "postgres-ledger" },
       "ledger.commit.failed",
     );
-
-    // ── APM: mark span as error (Error Tracking) ───────────────────
-    // Ledger error rate/count is derived from these error spans via a
-    // span-based metric in deploy/terraform/datadog — no DogStatsD counter.
-    const {
-      ERROR_MESSAGE,
-      ERROR_TYPE,
-      ERROR_STACK,
-    } = require("dd-trace/ext/tags");
-    span.setTag(ERROR_TYPE, err.constructor.name);
-    span.setTag(ERROR_MESSAGE, err.message);
-    span.setTag(ERROR_STACK, err.stack);
-    span.finish();
-    // ─────────────────────────────────────────────────────────────────
 
     throw err;
   }

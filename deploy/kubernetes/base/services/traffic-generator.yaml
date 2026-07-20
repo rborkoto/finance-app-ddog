@@ -6,7 +6,7 @@
 #
 # Running inside the cluster means:
 #   - Works identically on local k3s and EKS (no NodePort or port-forward needed)
-#   - Produces a constant stream of APM traces, logs, and metrics in Datadog
+#   - Produces a constant stream of requests against the Finance services
 #   - Always-on: no laptop required, survives cluster restarts
 #
 # The generator talks to services via their ClusterIP DNS names:
@@ -46,10 +46,6 @@ spec:
       labels:
         app: traffic-generator
         component: tooling
-        # ── No Datadog injection on the traffic generator ──────────────────
-        # We deliberately do NOT add admission.datadoghq.com/enabled: "true"
-        # here. The generator is a tooling pod — its own traces would add
-        # noise to APM. The traces we care about are on the Finance services.
     spec:
       # Restart policy: Always (default for Deployment) keeps traffic flowing
       # after transient failures (e.g. Keycloak restart, network blip).

@@ -7,24 +7,12 @@ import logging
 import os
 import time
 
-#
-from ddtrace import patch_all
-from ddtrace.contrib.logging import patch as patch_logging
-from pythonjsonlogger import jsonlogger
-
-patch_all()
-patch_logging()
-
-#
-import ddtrace.profiling.auto  # noqa: F401  — side-effect import, keep at top
 import stomp
 from listener import FraudScoreListener
+from pythonjsonlogger import jsonlogger
 
 # ── LOGGING SETUP ─────────────────────────────────────────────────────
-# Structured JSON logging so that Datadog Log Management can parse
-# every field without a custom pipeline processor.
-# When ddtrace log injection is enabled (see block above), dd.trace_id
-# and dd.span_id are automatically added to every log record.
+# Structured JSON logging so that every field is machine-parseable.
 # ─────────────────────────────────────────────────────────────────────
 logger = logging.getLogger("fraud_detection")
 logger.setLevel(logging.INFO)
@@ -61,9 +49,9 @@ def main() -> None:
             "broker.host": host,
             "broker.port": port,
             "queue": queue,
-            "service": os.environ.get("DD_SERVICE", "fraud-detection"),
-            "env": os.environ.get("DD_ENV", "local"),
-            "version": os.environ.get("DD_VERSION", "dev"),
+            "service": os.environ.get("APP_SERVICE", "fraud-detection"),
+            "env": os.environ.get("APP_ENV", "local"),
+            "version": os.environ.get("APP_VERSION", "dev"),
         },
     )
 

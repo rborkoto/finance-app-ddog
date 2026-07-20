@@ -58,21 +58,9 @@ spec:
       app: batch-processor
   template:
     metadata:
-      annotations:
-        # Datadog single-step instrumentation — inject java tracer at pod startup.
-        # Pinned to the tracer's MAJOR version (Datadog publishes floating vN
-        # init-image tags). More reproducible than "latest" (no surprise major
-        # bumps) while still receiving patches; always resolvable — unlike exact
-        # patch tags, which don't reliably exist as init-image tags.
-        admission.datadoghq.com/java-lib.version: "v1"
-        ad.datadoghq.com/batch-processor.logs: '[{"source":"java","service":"batch-processor"}]'
       labels:
         app: batch-processor
         component: service
-        admission.datadoghq.com/enabled: "true"
-        tags.datadoghq.com/env: "staging"
-        tags.datadoghq.com/service: "batch-processor"
-        tags.datadoghq.com/version: "latest"
     spec:
       # Wait for PostgreSQL before starting Spring Batch — it creates
       # its metadata tables on first run (initialize-schema: always).
@@ -112,33 +100,6 @@ spec:
                 secretKeyRef:
                   name: app-secrets
                   key: postgres-password
-
-            # ── Datadog Unified Service Tagging ─────────────────────────────
-            - name: DD_ENV
-              value: "staging"
-            - name: DD_SERVICE
-              value: "batch-processor"
-            - name: DD_VERSION
-              value: "latest"
-            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
-            # to the DaemonSet agent running on the same node.
-            - name: DD_AGENT_HOST
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
-            # Enables AppSec threat detection in the tracer. Works alongside
-            # the Agent-side asm.threats feature in datadog-agent.yaml.
-            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
-            # Docs: https://docs.datadoghq.com/security/application_security/
-            - name: DD_APPSEC_ENABLED
-              value: "true"
-            # ── DATA JOBS MONITORING (DJM) ──────────────────────────────────
-            # Surfaces Spring Batch job runs under APM > Data Jobs. Equivalent
-            # to the -Ddd.data.jobs.enabled=true JVM flag; no rebuild needed.
-            # Docs: https://docs.datadoghq.com/data_jobs/
-            - name: DD_DATA_JOBS_ENABLED
-              value: "true"
           # HTTP probes against Spring Boot Actuator — batch-processor now
           # runs an embedded web server (spring-boot-starter-web) to expose
           # the on-demand job trigger endpoints (/jobs/reconciliation,

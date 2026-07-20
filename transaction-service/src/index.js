@@ -1,16 +1,4 @@
-//
-//
-const tracer = require("dd-trace").init({
-  service: process.env.DD_SERVICE || "transaction-service",
-  env: process.env.DD_ENV || "development",
-  version: process.env.DD_VERSION || "0.0.0",
-  hostname: process.env.DD_AGENT_HOST || "datadog-agent",
-  //
-  //
-  //
-});
-
-("use strict");
+"use strict";
 
 const express = require("express");
 const pino = require("pino");
@@ -20,17 +8,14 @@ const paymentsRouter = require("./routes/payments");
 
 // ── STRUCTURED LOGGING ───────────────────────────────────────────────
 // Always use structured JSON logs — raw console.log is never acceptable
-// in production Finance services (no trace correlation, no log parsing).
-// When dd-trace logInjection is enabled (Step 4), dd.trace_id and
-// dd.span_id are automatically appended to every log record, enabling
-// the "View in APM" button inside Datadog Log Management.
+// in production Finance services (no log parsing).
 // ─────────────────────────────────────────────────────────────────────
 const logger = pino({
   level: process.env.LOG_LEVEL || "info",
   base: {
-    service: process.env.DD_SERVICE || "transaction-service",
-    env: process.env.DD_ENV || "development",
-    version: process.env.DD_VERSION || "0.0.0",
+    service: process.env.SERVICE_NAME || "transaction-service",
+    env: process.env.APP_ENV || "development",
+    version: process.env.APP_VERSION || "0.0.0",
   },
 });
 
@@ -67,14 +52,11 @@ app.use(express.json());
 app.use(pinoHttp({ logger }));
 
 // ── HEALTH ENDPOINT ──────────────────────────────────────────────────
-// Step 12 — target this endpoint with a Datadog Synthetic API test.
-// Docs: https://docs.datadoghq.com/synthetics/
-// ─────────────────────────────────────────────────────────────────────
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
-    service: process.env.DD_SERVICE || "transaction-service",
-    version: process.env.DD_VERSION || "0.0.0",
+    service: process.env.SERVICE_NAME || "transaction-service",
+    version: process.env.APP_VERSION || "0.0.0",
   });
 });
 
