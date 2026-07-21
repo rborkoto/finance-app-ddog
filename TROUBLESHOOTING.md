@@ -45,6 +45,19 @@ kubectl get events -n finance --sort-by='.lastTimestamp' | tail -20
 - `ImagePullBackOff` on local — you likely skipped the image-load step for
   your local Kubernetes tool (kind/k3d/minikube/Colima all require it; Docker
   Desktop/Rancher Desktop don't). See root README's Prerequisites.
+- **EKS node group `CREATE_FAILED` / `NodeCreationFailure: Instances failed to
+  join the kubernetes cluster`** — before debugging the node group itself, check
+  whether `tf-apply-aws` actually failed *earlier* on the VPC's NAT gateway EIP
+  with `AllocateAddress ... AddressLimitExceeded: The maximum number of addresses
+  has been reached`. If the NAT gateway's Elastic IP couldn't be allocated (the
+  account/region hit its EIP quota — often due to orphaned, unattached EIPs left
+  by other projects), the private-subnet nodes have **no outbound internet path**
+  and can't reach the cluster to join — which surfaces as the (misleading)
+  node-join error, not as an EIP error. Diagnose the real cause with
+  `aws ec2 describe-addresses` (look for rows with no `AssociationId` — those are
+  orphaned; release them), or raise the quota:
+  `aws service-quotas request-service-quota-increase --service-code ec2 --quota-code L-0263D0A3 --desired-value <N>`.
+  `make tf-apply-aws` is idempotent — re-run it once the EIP situation is resolved.
 
 **Do not proceed past this layer** until every pod in both namespaces is
 `Running`. Everything downstream assumes a healthy cluster.
@@ -93,10 +106,44 @@ kubectl run -it --rm curl-test --image=curlimages/curl -n finance --restart=Neve
   your laptop, make sure `KEYCLOAK_CLIENT_SECRET` is exported from the real
   secret (`kubectl get secret app-secrets -n finance -o jsonpath='{.data.keycloak-client-secret}' | base64 -d`),
   not left at the `REPLACE_WITH_SECRET` placeholder default.
-- Browser login redirects to the wrong host / cookie errors — `KEYCLOAK_PUBLIC_URL`
-  in the `app-config` ConfigMap doesn't match how you're actually reaching the
-  app (localhost vs. the EKS NLB hostname). See root README's Identity
-  Provider section.
+- Browser login fails on EKS — this is a family of related issues around the
+  Keycloak public URL and origins. Work through them in this order:
+  - **`Login failed: Keycloak HTTP 405`** — `KEYCLOAK_PUBLIC_URL` (in the
+    `app-config` ConfigMap, and the `KEYCLOAK_BASE` JS constant baked into the
+    `frontend-dashboard` ConfigMap) was patched to the wrong Terraform output.
+    Keycloak is served on the NLB's **HTTPS `:8443`** listener
+    (`terraform output -raw frontend_keycloak_https_url`), **not** the plain
+    HTTP `:80` dashboard URL (`frontend_url`). If you use `frontend_url`, the
+    login token POST hits nginx's static-file `location /` (no `/realms/` route
+    there), and nginx returns 405 for the non-GET request. Fix: re-patch using
+    `frontend_keycloak_https_url` (see the AWS EKS workflow, step 8).
+  - **`Login failed: Failed to fetch`** (after the 405 is fixed) — a CORS
+    rejection. The `finance-gateway` client in
+    `identity-provider/realm-export/finance-realm.json` hardcodes
+    `redirectUris`/`webOrigins` to `localhost:30080`/`:30443`, so the dashboard
+    JS's cross-origin token fetch from the NLB hostname is blocked (browsers
+    don't expose CORS details to JS, hence the generic message). Fix the running
+    client via the Keycloak Admin Console (Clients → finance-gateway → Access
+    settings → add `http://<nlb-host>` and `https://<nlb-host>:8443` to **Valid
+    redirect URIs** (with `/*`) and **Web origins**), or `kcadm.sh` from the pod.
+    Durable fix: template `redirectUris`/`webOrigins` at deploy time (or set
+    `"webOrigins": ["+"]` to auto-derive origins from `redirectUris`) — see the
+    root-cause note below.
+  - **Login worked, then broke again "for no reason"** — any of these resets the
+    fix: re-running `make deploy-k8s-eks` (its `create_frontend_cm` macro rebuilds
+    `frontend-dashboard` from `frontend-stub/index.html` using
+    `KEYCLOAK_PUBLIC_URL` as read from `deploy/kubernetes/base/01-config.yaml` on
+    disk — still `https://localhost:30443` — not the live patched value), or any
+    Keycloak pod restart (rollout, node replacement, OOM, redeploy). **Root
+    cause:** Keycloak runs `start-dev --import-realm` with in-memory H2 and no
+    PVC (`deploy/kubernetes/base/infrastructure/keycloak.yaml`), so every restart
+    wipes Admin-Console edits and re-imports the static `localhost`-only realm
+    JSON. This is fine for local dev but a real gotcha on EKS. The durable fix for
+    the whole family is to template `01-config.yaml`'s `KEYCLOAK_PUBLIC_URL` and
+    the realm's `redirectUris`/`webOrigins` at deploy time (e.g. in
+    `scripts/generate-eks-kustomization.sh`, driven by the `frontend_url` /
+    `frontend_keycloak_https_url` Terraform outputs), so a fresh deploy is correct
+    every time with no manual Admin-Console step.
 - **A failure here is very often mistaken for an instrumentation or telemetry
   problem** — a payment request that 401s never generates the `ledger.commit`
   span you were expecting to see in APM, but the "missing span" is a symptom,
@@ -199,6 +246,14 @@ curl -s "https://api.datadoghq.com/api/v1/validate" -H "DD-API-KEY: ${DD_API_KEY
   now (`make tf-plan-dd`/`tf-apply-dd` auto-copy from `staging.tfvars.example`
   on first use) — if you still hit this, you're likely calling `terraform`
   directly instead of through `make`.
+- **AWS** `terraform plan`/`apply` prints a `Deprecated attribute` warning for
+  `data.aws_region.current[0].name` (from the vendored
+  `terraform-aws-modules/vpc/aws` module's `vpc-flow-logs.tf`) — **non-blocking**;
+  plan/apply still succeed. It's the older `.name` attribute vs. the newer
+  `.region` on the AWS provider's region data source. If you bump the `hashicorp/aws`
+  provider or the `vpc` module version later it could become a hard error — pin
+  the module/provider versions in `deploy/terraform/aws/main.tf`, or bump the `vpc`
+  module to a release that has fixed it, when you next touch that code.
 
 ---
 
