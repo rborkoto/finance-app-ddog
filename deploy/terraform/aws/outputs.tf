@@ -92,7 +92,7 @@ output "ecr_registry_id" {
 
 output "ecr_login_command" {
   description = "Run this command to authenticate Docker with ECR before pushing images."
-  value       = "aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  value       = "aws ecr get-login-password --region ${var.aws_region}${var.aws_profile != "" ? " --profile ${var.aws_profile}" : ""} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
 # =============================================================================

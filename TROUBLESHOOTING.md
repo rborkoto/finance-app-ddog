@@ -39,6 +39,18 @@ kubectl get events -n finance --sort-by='.lastTimestamp' | tail -20
 - `ImagePullBackOff` on local — you likely skipped the image-load step for
   your local Kubernetes tool (kind/k3d/minikube/Colima all require it; Docker
   Desktop/Rancher Desktop don't). See root README's Prerequisites.
+- **EKS node group `CREATE_FAILED` / `NodeCreationFailure: Instances failed to
+  join the kubernetes cluster`** — before debugging the node group itself, check
+  whether `tf-apply-aws` actually failed *earlier* on the VPC's NAT gateway EIP
+  with `AllocateAddress ... AddressLimitExceeded: The maximum number of addresses
+  has been reached`. If the NAT gateway's Elastic IP couldn't be allocated (the
+  account/region hit its EIP quota — often orphaned, unattached EIPs from other
+  projects), the private-subnet nodes have **no outbound internet path** and can't
+  join — surfacing as the (misleading) node-join error, not an EIP error.
+  Diagnose with `aws ec2 describe-addresses` (rows with no `AssociationId` are
+  orphaned — release them), or raise the quota
+  (`aws service-quotas request-service-quota-increase --service-code ec2 --quota-code L-0263D0A3 --desired-value <N>`).
+  `make tf-apply-aws` is idempotent — re-run once resolved.
 
 **Do not proceed past this layer** until every pod in the `finance` namespace
 is `Running`. Everything downstream assumes a healthy cluster.
@@ -87,10 +99,36 @@ kubectl run -it --rm curl-test --image=curlimages/curl -n finance --restart=Neve
   your laptop, make sure `KEYCLOAK_CLIENT_SECRET` is exported from the real
   secret (`kubectl get secret app-secrets -n finance -o jsonpath='{.data.keycloak-client-secret}' | base64 -d`),
   not left at the `REPLACE_WITH_SECRET` placeholder default.
-- Browser login redirects to the wrong host / cookie errors — `KEYCLOAK_PUBLIC_URL`
-  in the `app-config` ConfigMap doesn't match how you're actually reaching the
-  app (localhost vs. the EKS NLB hostname). See root README's Identity
-  Provider section.
+- Browser login fails on EKS — a family of related issues around the Keycloak
+  public URL and origins. Work through them in order:
+  - **`Login failed: Keycloak HTTP 405`** — `KEYCLOAK_PUBLIC_URL` (in the
+    `app-config` ConfigMap, and the `KEYCLOAK_BASE` JS constant in the
+    `frontend-dashboard` ConfigMap) was patched to the wrong Terraform output.
+    Keycloak is served on the NLB's **HTTPS `:8443`** listener
+    (`terraform output -raw frontend_keycloak_https_url`), not the plain HTTP
+    `:80` dashboard URL (`frontend_url`). Using `frontend_url` makes the login
+    token POST hit nginx's static-file `location /` (no `/realms/` route), which
+    returns 405. Fix: re-patch with `frontend_keycloak_https_url` (AWS EKS
+    workflow, step 8).
+  - **`Login failed: Failed to fetch`** (after 405 is fixed) — a CORS rejection.
+    The `finance-gateway` client in
+    `identity-provider/realm-export/finance-realm.json` hardcodes
+    `redirectUris`/`webOrigins` to `localhost:30080`/`:30443`, so the browser
+    blocks the cross-origin token fetch from the NLB hostname. Fix the running
+    client in the Keycloak Admin Console (Clients → finance-gateway → Access
+    settings → add `http://<nlb-host>` and `https://<nlb-host>:8443` to **Valid
+    redirect URIs** (with `/*`) and **Web origins**), or set `"webOrigins": ["+"]`
+    plus templated `redirectUris` for a durable fix.
+  - **Login worked, then broke again "for no reason"** — re-running
+    `make deploy-k8s-eks` rebuilds `frontend-dashboard` from `01-config.yaml` on
+    disk (still `https://localhost:30443`), and any Keycloak pod restart wipes
+    Admin-Console edits. **Root cause:** Keycloak runs `start-dev --import-realm`
+    with in-memory H2 and no PVC
+    (`deploy/kubernetes/base/infrastructure/keycloak.yaml`), so every restart
+    re-imports the static `localhost`-only realm JSON. Durable fix: template
+    `01-config.yaml`'s `KEYCLOAK_PUBLIC_URL` and the realm's
+    `redirectUris`/`webOrigins` at deploy time (e.g. in
+    `scripts/generate-eks-kustomization.sh`, driven by the Terraform outputs).
 - **A failure here is very often mistaken for a downstream application
   problem** — a payment request that 401s never reaches the ledger write you
   were expecting, but the "missing write" is a symptom, not the cause. Always

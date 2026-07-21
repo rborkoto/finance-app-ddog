@@ -126,9 +126,9 @@ variable "datadog_app_key" {
 }
 
 variable "eks_kubernetes_version" {
-  description = "Kubernetes version for the EKS cluster. Check AWS EKS supported versions before upgrading."
+  description = "Kubernetes version for the EKS cluster. Check the AWS EKS supported-versions matrix (https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) before setting — pick a version still in standard support to avoid extended-support pricing / forced upgrades. If you change this, re-verify the addon versions (vpc-cni, kube-proxy, coredns, ebs-csi) in main.tf are compatible."
   type        = string
-  default     = "1.30"
+  default     = "1.33"
 }
 
 variable "node_instance_type" {

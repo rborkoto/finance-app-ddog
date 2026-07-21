@@ -357,10 +357,14 @@ make deploy-k8s-eks
 #    The NLB (aws_lb.frontend) was already created in step 3, so its hostname is
 #    known immediately — no waiting for AWS to assign a LoadBalancer hostname like
 #    the old Kubernetes-provisioned ELB required.
-FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
+#    IMPORTANT: use `frontend_keycloak_https_url` (the HTTPS :8443 listener), NOT
+#    `frontend_url` (plain HTTP :80, the dashboard's own URL). Keycloak is served on
+#    the :8443 listener; patching KEYCLOAK_PUBLIC_URL to the :80 URL sends login
+#    token POSTs to nginx's static-file location, which returns HTTP 405.
+FE_KC_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_https_url)
 kubectl patch configmap app-config -n finance --type=merge \
-  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_URL\"}}"
-sed "s|https://localhost:30443|$FE_URL|g" frontend-stub/index.html > /tmp/finance-index.html
+  -p "{\"data\":{\"KEYCLOAK_PUBLIC_URL\":\"$FE_KC_URL\"}}"
+sed "s|https://localhost:30443|$FE_KC_URL|g" frontend-stub/index.html > /tmp/finance-index.html
 kubectl create configmap frontend-dashboard --from-file=index.html=/tmp/finance-index.html \
   -n finance --dry-run=client -o yaml | kubectl apply -f -
 kubectl rollout restart deployment/keycloak deployment/frontend -n finance
