@@ -47,12 +47,11 @@ kubectl set env deployment/traffic-generator TRAFFIC_RATE=5 -n finance
 ```
 
 The default rate is `TRAFFIC_RATE=2` (2 req/s), set in the Deployment spec — enough to
-produce meaningful APM data without overwhelming a demo cluster. Raise it for load
+produce meaningful telemetry without overwhelming a demo cluster. Raise it for load
 testing, lower it for quiet demos.
 
-The generator pod is deliberately **not** instrumented with Datadog (no
-`admission.datadoghq.com/enabled` annotation) — it's tooling, not a Finance service, so
-its own traces would just add noise to APM.
+The generator pod is tooling, not a Finance service. Leave it out of your
+instrumentation so its own telemetry doesn't add noise.
 
 ---
 
@@ -99,7 +98,7 @@ python3 scripts/generate-traffic.py
 # Higher rate
 python3 scripts/generate-traffic.py --rate 5
 
-# Run for a fixed window (e.g. 5 minutes to populate an APM dashboard)
+# Run for a fixed window (e.g. 5 minutes of steady load)
 python3 scripts/generate-traffic.py --rate 3 --duration 300
 ```
 
@@ -154,8 +153,7 @@ Passwords: `Finance@2025!` (local dev only — see `identity-provider/README.md`
 Weights are relative (they don't need to sum to 100) — the script picks a scenario each
 loop iteration via weighted random choice out of the total (currently 102). The batch
 job scenario is intentionally low-weight since each run reads/writes the ledger DB; it
-exists to produce a steady stream of `batch.job` / `batch.step` spans for Data Jobs
-Monitoring without waiting for the nightly cron.
+exists so batch jobs run regularly without anyone triggering them by hand.
 
 ### Full request flow for a payment scenario
 
@@ -170,8 +168,7 @@ generate-traffic.py
                                └─ notification-service (async consumer)
 ```
 
-Each payment triggers the full async chain through ActiveMQ Artemis, exercising
-Data Streams Monitoring (DSM) paths once that layer is enabled.
+Each payment triggers the full async chain through ActiveMQ Artemis.
 
 ---
 
@@ -189,9 +186,7 @@ in the `app-secrets` Secret (default dev value `artemis_dev_password`, see
 `deploy/kubernetes/base/02-secrets.yaml`).
 
 Default Keycloak admin credentials: `admin` / value of the `keycloak-admin-password` key
-in the same `app-secrets` Secret (default dev value `Finance@Admin2025!`). There is no
-`KEYCLOAK_ADMIN_PASSWORD` in `.env` — Keycloak's admin password lives only in the K8s
-Secret.
+in the same `app-secrets` Secret (default dev value `Finance@Admin2025!`). Keycloak's admin password lives only in the K8s Secret.
 
 ### Logs
 
@@ -207,8 +202,7 @@ kubectl logs -n finance deploy/fraud-detection -f
 
 ### PostgreSQL
 
-`.env.example` does not define `POSTGRES_USER` — the ledger DB credentials live in the
-`app-secrets` K8s Secret. Port-forward and read the credentials from the Secret:
+The ledger DB credentials live in the `app-secrets` K8s Secret. Port-forward and read the credentials from the Secret:
 
 ```bash
 kubectl port-forward svc/postgres-ledger 5432:5432 -n finance
@@ -224,23 +218,3 @@ SELECT id, owner_id, tier, currency, balance FROM accounts;
 
 ---
 
-## Relationship to the Datadog Learning Progression
-
-The traffic generator is useful at **every step** of the Learning Progression in
-`INSTRUMENTATION.md`:
-
-| Step | What the generator proves |
-|---|---|
-| Step 1 — Structured JSON logs | Log lines have the Finance JSON schema |
-| Step 2 — Unified Service Tagging | `env`, `service`, `version` tags appear on all telemetry |
-| Step 3 — APM | Traces appear in APM > Services; payment flow visible as a distributed trace |
-| Step 4 — Log–trace correlation | `dd.trace_id` appears in log records; "View in APM" button works |
-| Step 5 — Custom spans | `payment.authorize`, `account.balance_check` spans appear in flame graphs |
-| Step 6 — Custom metrics | `finance.payment.initiated`, `finance.payment.processing_time` in dashboards |
-| Step 9 — Database Monitoring | Account and transaction queries appear in Databases > Query Samples |
-| Step 10 — ActiveMQ JMX metrics | `fraud.score.queue` depth and consumer count visible in the ActiveMQ integration |
-| Step 12 — Synthetic Monitoring | Use alongside Synthetic tests to compare real vs. scripted traffic |
-
-The in-cluster `traffic-generator` Deployment already keeps this data fresh continuously.
-Use the manual/laptop invocation (`python3 scripts/generate-traffic.py --rate 3 --duration 300`)
-only if you need a targeted burst before opening a specific Datadog product page.

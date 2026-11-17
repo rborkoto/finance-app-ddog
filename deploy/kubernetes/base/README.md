@@ -1,7 +1,7 @@
 # Kubernetes Base Deployment — Finance Sample App
 
 This directory contains a complete, self-contained Kubernetes deployment of the
-Finance sample app **without any Datadog dependency**. It is the recommended
+Finance sample app. Nothing here deploys or configures Datadog. It is the recommended
 starting point before progressively adding observability.
 
 ---
@@ -26,7 +26,7 @@ base/
     ├── notification-service.yaml # Go async notifier (JMS consumer, no HTTP)
     ├── batch-processor.yaml   # Java/Spring Batch nightly reconciliation (no HTTP)
     ├── frontend.yaml          # nginx dashboard — NodePort :30080
-    └── traffic-generator.yaml # In-cluster continuous load generator (no Datadog injection)
+    └── traffic-generator.yaml # In-cluster continuous load generator 
 ```
 
 ---
@@ -210,12 +210,6 @@ make undeploy-k8s
 
 ---
 
-## Adding Datadog observability
+## Adding Datadog
 
-See `../datadog/README.md` for the full step-by-step guide to add the Datadog
-Agent, enable APM, log collection, Database Monitoring, and Data Streams Monitoring.
-
-```bash
-# After completing the prerequisites in ../datadog/README.md:
-make deploy-k8s-dd
-```
+That is the exercise. See the root README.

@@ -7,25 +7,11 @@ import logging
 import os
 import time
 
-#
-from ddtrace import patch_all
-from ddtrace.contrib.logging import patch as patch_logging
 from pythonjsonlogger import jsonlogger
 
-patch_all()
-patch_logging()
-
-#
-import ddtrace.profiling.auto  # noqa: F401  — side-effect import, keep at top
 import stomp
 from listener import FraudScoreListener
 
-# ── LOGGING SETUP ─────────────────────────────────────────────────────
-# Structured JSON logging so that Datadog Log Management can parse
-# every field without a custom pipeline processor.
-# When ddtrace log injection is enabled (see block above), dd.trace_id
-# and dd.span_id are automatically added to every log record.
-# ─────────────────────────────────────────────────────────────────────
 logger = logging.getLogger("fraud_detection")
 logger.setLevel(logging.INFO)
 
@@ -37,18 +23,14 @@ _formatter = jsonlogger.JsonFormatter(
 _handler.setFormatter(_formatter)
 logger.addHandler(_handler)
 
-
 def _broker_host() -> str:
     return os.environ.get("STOMP_HOST", "activemq-artemis")
-
 
 def _broker_port() -> int:
     return int(os.environ.get("STOMP_PORT", "61613"))
 
-
 def _queue() -> str:
     return os.environ.get("FRAUD_QUEUE", "fraud.score.queue")
-
 
 def main() -> None:
     host = _broker_host()
@@ -120,7 +102,6 @@ def main() -> None:
                 extra={"error": str(exc), "error.type": type(exc).__name__},
             )
             time.sleep(5)
-
 
 if __name__ == "__main__":
     main()

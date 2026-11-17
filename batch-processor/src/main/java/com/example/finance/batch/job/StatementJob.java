@@ -1,6 +1,6 @@
 package com.example.finance.batch.job;
 
-import com.example.finance.batch.listener.DatadogJobListener;
+import com.example.finance.batch.listener.JobSummaryListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
@@ -26,38 +26,6 @@ import java.time.YearMonth;
 import java.util.HashMap;
 import java.util.Map;
 
-// ── DATADOG INSTRUMENTATION ───────────────────────────────────────────────────
-// No imports needed here for basic APM — the Java agent auto-instruments
-// Spring Batch Job and Step execution automatically.
-//
-// Finance span tags applied by DatadogJobListener (when agent is active):
-//   job.name = "monthly-statement-generation"
-//   job.batch_size = 50 (chunk size)
-//   job.status = "completed" | "failed" | "partial"
-//   job.records_processed = total write count across all steps
-//
-// Docs: https://docs.datadoghq.com/data_jobs/java/
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Spring Batch configuration for the Monthly Statement Generation Job.
- *
- * <p>Reads account history for the previous calendar month from the
- * {@code account_transactions} view, generates a PDF statement stub
- * per account, and records statement metadata in the {@code statements} table.
- *
- * <p>Scheduled to run on the 1st of each month at 01:00 UTC
- * (configurable in application.yml).
- *
- * <p>JobParameters include {@code statement.period} (YYYY-MM) to make each
- * monthly run uniquely identifiable — required for Spring Batch's
- * {@code JobInstanceAlreadyCompleteException} safeguard, and directly
- * surfaced in the Data Jobs Monitoring run history timeline.
- *
- * <p>Chunk size: 50 (lower than ReconciliationJob — each item triggers
- * a heavier PDF-generation stub). Tune based on heap profiling results
- * visible in the Continuous Profiler flame graph (Step 7).
- */
 @Configuration
 public class StatementJob {
 
@@ -79,7 +47,7 @@ public class StatementJob {
     private DataSource dataSource;
 
     @Autowired
-    private DatadogJobListener datadogJobListener;
+    private JobSummaryListener jobSummaryListener;
 
     // ── SCHEDULER ─────────────────────────────────────────────────────────────
     // Uncomment the @Scheduled annotation to enable monthly execution.
@@ -102,7 +70,7 @@ public class StatementJob {
     @Bean
     public Job statementBatchJob() {
         return new JobBuilder(JOB_NAME, jobRepository)
-                .listener(datadogJobListener)
+                .listener(jobSummaryListener)
                 .start(statementStep())
                 .build();
     }
@@ -118,15 +86,6 @@ public class StatementJob {
                 .build();
     }
 
-    // ── ITEM READER ───────────────────────────────────────────────────────────
-    // Reads distinct accounts that had activity in the previous calendar month.
-    // Each item represents one account; the processor fetches full history.
-    //
-    // ⚠ DATADOG DBM NOTE: When DBM is enabled (Step 9), this query and its
-    // explain plan will be captured automatically. Ensure account_id is indexed
-    // in account_transactions and that the date range predicate hits a partition
-    // or index — visible in Databases > Query Samples > Explain Plan.
-    // ─────────────────────────────────────────────────────────────────────────
     @Bean
     public JdbcCursorItemReader<Map<String, Object>> statementItemReader() {
         return new JdbcCursorItemReaderBuilder<Map<String, Object>>()
@@ -149,34 +108,12 @@ public class StatementJob {
                 .build();
     }
 
-    // ── ITEM PROCESSOR ────────────────────────────────────────────────────────
-    // Stub: generates a PDF statement for each account.
-    // In production, this would call a PDF generation library or external service.
-    //
-    // Performance note: PDF generation is CPU-intensive. When the Continuous
-    // Profiler is enabled (Step 7), flame graphs will show which accounts or
-    // account tiers dominate CPU time — use this to prioritise optimisation.
-    //
-    // Finance span tags to add (when agent is active):
-    //   account.tier = item.get("account_tier")  — retail | premium | corporate
-    //   payment.currency = item.get("currency")  — EUR | USD | GBP
-    //
-    // ── DATADOG INSTRUMENTATION ───────────────────────────────────────────────
-    // import datadog.trace.api.Trace;
-    // import io.opentracing.Span;
-    // import io.opentracing.util.GlobalTracer;
-    //
-    // @Trace(operationName = "batch.statement.generate", resourceName = "pdf-stub")
-    // ─────────────────────────────────────────────────────────────────────────
     @Bean
     public ItemProcessor<Map<String, Object>, Map<String, Object>> statementItemProcessor() {
         return item -> {
             String accountId = (String) item.get("account_id");
             String accountTier = (String) item.get("account_tier");
 
-            // ⚠ HIGH-CARDINALITY WARNING: Never log or tag with raw account_id at
-            // span/metric level. Use account.tier for cardinality-safe aggregation.
-            // Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
             log.debug("Generating statement for account_tier={} currency={}",
                     accountTier, item.get("currency"));
 

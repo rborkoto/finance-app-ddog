@@ -3,17 +3,6 @@ package com.example.finance.account.model;
 import java.math.BigDecimal;
 import java.time.Instant;
 
-/**
- * Represents a financial account in the ledger.
- *
- * Finance domain tags to attach to spans/logs when handling this entity:
- *   account.tier    → retail | premium | corporate  (SLA-aware alerting)
- *   payment.currency → EUR | USD | GBP             (regulatory / regional analysis)
- *
- * WARNING — High cardinality: never use `id` or `ownerId` as a span tag directly.
- * Tag with bucketed / categorical values only.
- * Docs: https://docs.datadoghq.com/tagging/assigning_tags/#defining-tags
- */
 public class Account {
 
     private String id;
@@ -21,11 +10,6 @@ public class Account {
     private BigDecimal balance;
     private String currency;
 
-    /**
-     * Account tier drives SLA alerting in Datadog.
-     * Valid values: retail | premium | corporate
-     * Used as span tag: account.tier
-     */
     private String tier;
 
     private Instant createdAt;

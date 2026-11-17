@@ -45,21 +45,9 @@ spec:
       app: transaction-service
   template:
     metadata:
-      annotations:
-        # Datadog single-step instrumentation — inject js tracer at pod startup.
-        # Pinned to the tracer's MAJOR version (Datadog publishes floating vN
-        # init-image tags). More reproducible than "latest" (no surprise major
-        # bumps) while still receiving patches; always resolvable — unlike exact
-        # patch tags, which don't reliably exist as init-image tags.
-        admission.datadoghq.com/js-lib.version: "v5"
-        ad.datadoghq.com/transaction-service.logs: '[{"source":"nodejs","service":"transaction-service"}]'
       labels:
         app: transaction-service
         component: service
-        admission.datadoghq.com/enabled: "true"
-        tags.datadoghq.com/env: "staging"
-        tags.datadoghq.com/service: "transaction-service"
-        tags.datadoghq.com/version: "latest"
     spec:
       # transaction-service writes to the ledger DB (PostgreSQL) and publishes
       # fraud-scoring events via ActiveMQ STOMP. Both init containers prevent
@@ -135,34 +123,6 @@ spec:
                   name: app-config
                   key: REDIS_URL
 
-            # ── Datadog Unified Service Tagging ─────────────────────────────
-            - name: DD_ENV
-              value: "staging"
-            - name: DD_SERVICE
-              value: "transaction-service"
-            - name: DD_VERSION
-              value: "latest"
-            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
-            # to the DaemonSet agent running on the same node.
-            - name: DD_AGENT_HOST
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
-            # Enables AppSec threat detection in the tracer. Works alongside
-            # the Agent-side asm.threats feature in datadog-agent.yaml.
-            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
-            # Docs: https://docs.datadoghq.com/security/application_security/
-            - name: DD_APPSEC_ENABLED
-              value: "true"
-            # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
-            # JMS pipeline visibility in Data Streams. This service produces to
-            # ActiveMQ; full producer→consumer stitching across the Python/Go
-            # consumers may need manual checkpoints (see docs).
-            # Docs: https://docs.datadoghq.com/data_streams/
-            - name: DD_DATA_STREAMS_ENABLED
-              value: "true"
-          # ── Health checks ──────────────────────────────────────────────────
           livenessProbe:
             httpGet:
               path: /health

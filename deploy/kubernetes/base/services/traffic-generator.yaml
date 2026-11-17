@@ -1,32 +1,3 @@
-# =============================================================================
-# Finance Sample App — Traffic Generator
-# =============================================================================
-# A continuously-running in-cluster Deployment that generates realistic
-# mixed traffic against the Finance services.
-#
-# Running inside the cluster means:
-#   - Works identically on local k3s and EKS (no NodePort or port-forward needed)
-#   - Produces a constant stream of APM traces, logs, and metrics in Datadog
-#   - Always-on: no laptop required, survives cluster restarts
-#
-# The generator talks to services via their ClusterIP DNS names:
-#   gateway-api:8080, account-service:8081, transaction-service:8082, keycloak:8080
-#
-# Note: keycloak:8080 here is plain HTTP via ClusterIP — this generator never
-# goes through the nginx self-signed HTTPS proxy on :30443, so it is
-# unaffected by the browser-only self-signed certificate warning.
-#
-# Tune rate and behaviour via the TRAFFIC_RATE and TRAFFIC_SCENARIOS env vars.
-#
-# To watch live output:
-#   kubectl logs -n finance deploy/traffic-generator -f
-#
-# To pause traffic (scale to 0):
-#   kubectl scale deployment traffic-generator --replicas=0 -n finance
-#
-# To resume:
-#   kubectl scale deployment traffic-generator --replicas=1 -n finance
-# =============================================================================
 
 apiVersion: apps/v1
 kind: Deployment
@@ -46,10 +17,6 @@ spec:
       labels:
         app: traffic-generator
         component: tooling
-        # ── No Datadog injection on the traffic generator ──────────────────
-        # We deliberately do NOT add admission.datadoghq.com/enabled: "true"
-        # here. The generator is a tooling pod — its own traces would add
-        # noise to APM. The traces we care about are on the Finance services.
     spec:
       # Restart policy: Always (default for Deployment) keeps traffic flowing
       # after transient failures (e.g. Keycloak restart, network blip).
@@ -114,12 +81,13 @@ spec:
                   name: app-secrets
                   key: keycloak-client-secret
 
-            # ── Tuning ───────────────────────────────────────────────────────
-            # TRAFFIC_RATE: requests per second. Default 2 — enough to produce
-            # meaningful APM data without overwhelming a demo cluster.
-            # Raise to 5-10 for load testing, lower to 0.5 for quiet demos.
             - name: TRAFFIC_RATE
               value: "2"
+
+            # Print each line as it happens; without this Python buffers
+            # stdout and the log stays empty for the first minute or so.
+            - name: PYTHONUNBUFFERED
+              value: "1"
 
           volumeMounts:
             - name: scripts

@@ -45,21 +45,9 @@ spec:
       app: account-service
   template:
     metadata:
-      annotations:
-        # Datadog single-step instrumentation — inject java tracer at pod startup.
-        # Pinned to the tracer's MAJOR version (Datadog publishes floating vN
-        # init-image tags). More reproducible than "latest" (no surprise major
-        # bumps) while still receiving patches; always resolvable — unlike exact
-        # patch tags, which don't reliably exist as init-image tags.
-        admission.datadoghq.com/java-lib.version: "v1"
-        ad.datadoghq.com/account-service.logs: '[{"source":"java","service":"account-service"}]'
       labels:
         app: account-service
         component: service
-        admission.datadoghq.com/enabled: "true"
-        tags.datadoghq.com/env: "staging"
-        tags.datadoghq.com/service: "account-service"
-        tags.datadoghq.com/version: "latest"
     spec:
       # Wait for both PostgreSQL and ActiveMQ before starting.
       # account-service's Spring Actuator health check includes JMS, so
@@ -124,38 +112,6 @@ spec:
                   name: app-secrets
                   key: artemis-password
 
-            # ── Datadog Unified Service Tagging ─────────────────────────────
-            - name: DD_ENV
-              value: "staging"
-            - name: DD_SERVICE
-              value: "account-service"
-            - name: DD_VERSION
-              value: "latest"
-            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
-            # to the DaemonSet agent running on the same node.
-            - name: DD_AGENT_HOST
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
-            # Enables AppSec threat detection in the tracer. Works alongside
-            # the Agent-side asm.threats feature in datadog-agent.yaml.
-            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
-            # Docs: https://docs.datadoghq.com/security/application_security/
-            - name: DD_APPSEC_ENABLED
-              value: "true"
-            # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
-            # End-to-end JMS pipeline visibility (producer → consumer latency,
-            # queue lag) in Data Streams. dd-trace-java auto-instruments JMS.
-            # Docs: https://docs.datadoghq.com/data_streams/
-            - name: DD_DATA_STREAMS_ENABLED
-              value: "true"
-          # ── Health checks ──────────────────────────────────────────────
-          # Use the custom /health endpoint (not /actuator/health) because Spring
-          # Actuator includes the JMS health indicator which would report DOWN
-          # if ActiveMQ has a transient hiccup, causing unnecessary pod restarts.
-          # /health is the hand-rolled endpoint in AccountController that only
-          # checks the service itself.
           livenessProbe:
             httpGet:
               path: /health

@@ -69,6 +69,10 @@ dist/
 *.so
 *.dylib
 vendor/
+# `go build ./...` run from inside notification-service/ produces an
+# extensionless binary named after the module dir — not caught by the
+# patterns above.
+/notification-service/notification-service
 
 # ── IDEs & editors ───────────────────────────────────────────────────────────
 .idea/
@@ -114,6 +118,22 @@ deploy/kubernetes/overlays/eks/kustomization.yaml
 # ── Instrumentation state ────────────────────────────────────────────────────
 # Idempotency marker for make instrument/uninstrument — never committed.
 .instrumentation-applied
+# Idempotency marker for make tags/untag — never committed.
+.tags-applied
+# Idempotency marker for make dbm/undbm — never committed.
+.dbm-applied
+# Idempotency marker for make security/unsecurity — never committed.
+.security-applied
+# Idempotency marker for make dem/undem — never committed.
+.dem-applied
+# Cached RUM application id/client_token from make dem — contains a live
+# Datadog credential (client_token), never committed.
+.dem-state.json
+# Idempotency markers for make scenario-N/unscenario-N (workshop fault
+# injection) — never committed.
+.scenario-1-applied
+.scenario-2-applied
+.scenario-3-applied
 
 # ── AI agent / Claude files ──────────────────────────────────────────────────
 # Local agent instructions and workspace — not committed.

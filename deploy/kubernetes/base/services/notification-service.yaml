@@ -25,22 +25,9 @@ spec:
       app: notification-service
   template:
     metadata:
-      annotations:
-        # NOTE: Go does NOT support single-step library injection like
-        # Python/JS/Java — the Admission Controller injects no init container for
-        # Go, so this annotation is effectively a no-op (kept only for parity /
-        # documentation). Go APM is enabled in-code via tracer.Start() (see
-        # main.go) plus compile-time instrumentation (orchestrion), not here.
-        # Docs: https://docs.datadoghq.com/tracing/trace_collection/automatic_instrumentation/single-step-apm/
-        admission.datadoghq.com/go-lib.version: latest
-        ad.datadoghq.com/notification-service.logs: '[{"source":"go","service":"notification-service"}]'
       labels:
         app: notification-service
         component: service
-        admission.datadoghq.com/enabled: "true"
-        tags.datadoghq.com/env: "staging"
-        tags.datadoghq.com/service: "notification-service"
-        tags.datadoghq.com/version: "latest"
     spec:
       # notification-service exits after max retries if ActiveMQ is not reachable.
       # The init container ensures it only starts once the STOMP port is open.
@@ -81,35 +68,6 @@ spec:
             - name: ALERT_QUEUE
               value: "alert.queue"
 
-            # ── Health check ───────────────────────────────────────────────────
-            # Verify the main consumer process is alive.
-            # ── Datadog Unified Service Tagging ─────────────────────────────
-            - name: DD_ENV
-              value: "staging"
-            - name: DD_SERVICE
-              value: "notification-service"
-            - name: DD_VERSION
-              value: "latest"
-            # DD_AGENT_HOST uses the node's IP so the pod sends traces/metrics
-            # to the DaemonSet agent running on the same node.
-            - name: DD_AGENT_HOST
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            # ── APPLICATION SECURITY MANAGEMENT (ASM) ───────────────────────
-            # Enables AppSec threat detection in the tracer. Works alongside
-            # the Agent-side asm.threats feature in datadog-agent.yaml.
-            # Detects SQLi, XSS, SSRF and business-logic attacks at runtime.
-            # Docs: https://docs.datadoghq.com/security/application_security/
-            - name: DD_APPSEC_ENABLED
-              value: "true"
-            # ── DATA STREAMS MONITORING (DSM) ───────────────────────────────
-            # JMS consumer on alert.queue. Enabling the flag turns DSM on; for
-            # full pipeline stitching a Go consumer checkpoint may be required
-            # (see docs).
-            # Docs: https://docs.datadoghq.com/data_streams/
-            - name: DD_DATA_STREAMS_ENABLED
-              value: "true"
           livenessProbe:
             exec:
               command:

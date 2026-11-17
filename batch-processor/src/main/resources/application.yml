@@ -50,17 +50,6 @@ spring:
       # so Spring Batch itself must never attempt to (re)create them.
       initialize-schema: never
 
-# ── LOGGING ─────────────────────────────────────────────────────────────────
-# Logback configuration is in logback-spring.xml (structured JSON via logstash-logback-encoder).
-# JSON format is required for Datadog Log Management to parse log entries correctly.
-#
-# ── DATADOG LOG CORRELATION (Step 4) ─────────────────────────────────────────
-# When dd-java-agent is attached with -Ddd.logs.injection=true, the agent
-# automatically injects dd.trace_id and dd.span_id into the MDC.
-# logstash-logback-encoder includes MDC fields in JSON output — no code change needed.
-# The Datadog Agent log pipeline then correlates log entries with APM traces.
-# Docs: https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/java/
-# ─────────────────────────────────────────────────────────────────────────────
 logging:
   level:
     root: INFO
@@ -95,13 +84,4 @@ management:
       show-details: when-authorized
   metrics:
     tags:
-      # ── DATADOG INSTRUMENTATION ────────────────────────────────────────────
-      # Uncomment to add Unified Service Tags to all Micrometer/Prometheus metrics.
-      # These tags align Spring Boot Actuator metrics with Datadog APM service tags.
-      # Docs: https://docs.datadoghq.com/getting_started/tagging/unified_service_tagging/
-      #
-      # application: ${DD_SERVICE:batch-processor}
-      # env: ${DD_ENV:local}
-      # version: ${DD_VERSION:unknown}
-      # ─────────────────────────────────────────────────────────────────────
       application: ${spring.application.name}

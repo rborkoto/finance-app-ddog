@@ -1,17 +1,3 @@
-# =============================================================================
-# Finance Sample App — PostgreSQL (Ledger Database)
-# =============================================================================
-# StatefulSet is used (over Deployment) because PostgreSQL is a stateful
-# workload: the pod identity and stable storage claim must survive pod restarts
-# and rescheduling.
-#
-# pg_stat_statements is loaded at startup (via the `command` override) so that
-# the Datadog Database Monitoring agent check can collect query-level metrics
-# without any application-side changes.
-#
-# PVC storage class is intentionally left as the cluster default.
-# Override `storageClassName` for production (e.g. `gp3` on EKS).
-# =============================================================================
 
 # ── Service ───────────────────────────────────────────────────────────────────
 apiVersion: v1

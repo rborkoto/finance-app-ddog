@@ -16,21 +16,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDate;
 import java.util.Map;
 
-/**
- * On-demand HTTP trigger for the Spring Batch jobs.
- *
- * <p>In production these jobs run on a nightly/monthly cron (see
- * {@code batch.reconciliation.cron} / {@code batch.statement.cron} in
- * application.yml, both disabled by default in this sample). For a live
- * demo — and so the traffic generator can produce a steady stream of
- * {@code batch.job} / {@code batch.step} spans for Data Jobs Monitoring
- * without waiting for a nightly cron — this controller launches a job
- * synchronously on request.
- *
- * <p>Each call uses a unique {@code run.timestamp} JobParameter so repeated
- * triggers always start a new JobInstance instead of failing with
- * {@code JobInstanceAlreadyCompleteException}.
- */
 @RestController
 public class BatchJobController {
 

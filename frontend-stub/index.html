@@ -5,29 +5,6 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Finance Platform — Dashboard</title>
 
-        <!-- ── DATADOG RUM ─────────────────────────────────────────────────────────────
-        Step 8 — Browser RUM + Session Replay
-        Docs: https://docs.datadoghq.com/real_user_monitoring/browser/
-        RUM app created by Terraform (make tf-apply-dd). Credentials injected by make instrument.
-        PII MASKING: 'mask-user-input' hides form values in Session Replay.
-        ─────────────────────────────────────────────────────────────────────────── -->
-        <script src="https://www.datadoghq-browser-agent.com/us1/v5/datadog-rum.js"></script>
-        <script>
-            window.DD_RUM && window.DD_RUM.init({
-                applicationId:           'REPLACE_WITH_APPLICATION_ID',
-                clientToken:             'REPLACE_WITH_CLIENT_TOKEN',
-                site:                    'datadoghq.com',
-                service:                 'finance-frontend',
-                env:                     'staging',
-                version:                 '1.0.0',
-                sessionSampleRate:       100,
-                sessionReplaySampleRate: 100,
-                trackUserInteractions:   true,
-                defaultPrivacyLevel:     'mask-user-input',
-            });
-            window.DD_RUM.startSessionReplayRecording();
-        </script>
-
         <style>
             *,
             *::before,
@@ -387,7 +364,7 @@
         <header>
             <div>
                 <h1>Finance Platform</h1>
-                <small>Datadog observability instrumentation exercise</small>
+                <small>Meridian Financial observability exercise</small>
             </div>
             <div id="auth-badge" style="display: none">
                 <div class="avatar" id="avatar-initial">?</div>
@@ -555,15 +532,6 @@
                         ></div>
                         <div id="balance-tags" style="margin-top: 0.5rem"></div>
                         <div id="balance-status" class="status-box"></div>
-                        <!--
-      ── DATADOG RUM ACTION ────────────────────────────────────────────────────
-      After enabling the RUM SDK, add in fetchBalance() on success:
-      window.DD_RUM && window.DD_RUM.addAction('account_dashboard.load', {
-        account_tier: tier,   // bounded — safe as RUM attribute
-        currency,
-        // Do NOT include: raw balance, account_id
-      });
-      ── END DATADOG RUM ACTION ────────────────────────────────────────────── -->
                     </div>
                 </div>
 
@@ -800,19 +768,6 @@
                         Submit Payment
                     </button>
                     <div id="pay-status" class="status-box"></div>
-                    <!--
-    ── DATADOG RUM ACTION ────────────────────────────────────────────────────
-    After enabling the RUM SDK, add in initiatePayment() on success:
-    window.DD_RUM && window.DD_RUM.addAction('payment_form.submit', {
-      currency,
-      amount_bucket: amount < 100 ? '<100' : amount <= 1000 ? '100-1000' : '>1000',
-      // Do NOT include: raw amount, account_id, payment_id
-    });
-    On error:
-    window.DD_RUM && window.DD_RUM.addError(new Error('Payment failed: ' + msg), {
-      http_status: res.status, currency,
-    });
-    ── END DATADOG RUM ACTION ────────────────────────────────────────────── -->
                 </div>
 
                 <!-- Payment Validation — shown only for finance-compliance and finance-admin -->
@@ -927,7 +882,6 @@
                 return new Date().toLocaleTimeString();
             }
 
-            // Structured console log — replace with DD_RUM.addAction() at Step 8.
             function appLog(level, message, ctx = {}) {
                 const entry = {
                     timestamp: new Date().toISOString(),
@@ -1487,13 +1441,6 @@
                             currency: data.currency,
                         });
 
-                        // ── DATADOG RUM ACTION ────────────────────────────────────────────
-                        // window.DD_RUM && window.DD_RUM.addAction('account.create', {
-                        //   account_tier: data.tier,   // bounded — safe
-                        //   currency:     data.currency,
-                        // });
-                        // ─────────────────────────────────────────────────────────────────
-
                         // Refresh the accounts table
                         loadAccounts();
                     } else {
@@ -1587,11 +1534,6 @@
                             amount_bucket: amountBucket,
                         });
 
-                        // ── DATADOG RUM ACTION ────────────────────────────────────────────
-                        // window.DD_RUM && window.DD_RUM.addAction('payment_form.submit', {
-                        //   currency, amount_bucket: amountBucket,
-                        // });
-                        // ─────────────────────────────────────────────────────────────────
                     } else {
                         const msg =
                             data.detail?.[0]?.msg ||
@@ -1607,11 +1549,6 @@
                             currency,
                         });
 
-                        // ── DATADOG RUM ERROR ─────────────────────────────────────────────
-                        // window.DD_RUM && window.DD_RUM.addError(new Error('Payment failed: ' + msg), {
-                        //   http_status: res.status, currency,
-                        // });
-                        // ─────────────────────────────────────────────────────────────────
                     }
                 } catch (err) {
                     statusEl.textContent = `Network error: ${err.message}`;
@@ -1680,11 +1617,6 @@
                             currency,
                         });
 
-                        // ── DATADOG RUM ACTION ────────────────────────────────────────────
-                        // window.DD_RUM && window.DD_RUM.addAction('account_dashboard.load', {
-                        //   account_tier: tier, currency,
-                        // });
-                        // ─────────────────────────────────────────────────────────────────
                     } else {
                         amountEl.textContent = "— —";
                         const msg =

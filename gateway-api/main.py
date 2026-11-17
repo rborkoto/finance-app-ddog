@@ -1,14 +1,11 @@
 """
 gateway-api — Public-facing REST API and authentication middleware.
-Finance sample application | Datadog observability demo.
+Meridian Financial sample application.
 
 Run:
     uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 
 Authentication: Bearer token (JWT) issued by Keycloak — active by default.
-All Datadog instrumentation is commented out. The app runs cleanly with
-zero Datadog configuration. Follow the Learning Progression in README.md
-to progressively enable each observability layer.
 """
 
 import logging
@@ -16,45 +13,13 @@ import os
 import time
 import uuid
 
-#
-import ddtrace.profiling.auto  # noqa: F401  — side-effect import, starts profiler
 import httpx
 
-#
-from ddtrace import patch_all, tracer
-from ddtrace.contrib.logging import patch as patch_logging
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from pythonjsonlogger import jsonlogger
-
-patch_all()  # must be called before importing instrumented libraries
-patch_logging()  # injects dd.trace_id / dd.span_id into every log record
-
-# NOTE: custom metrics are NOT emitted via DogStatsD. They are generated from
-# APM spans by span-based metrics defined in deploy/terraform/datadog (e.g.
-# finance.payment.hits / finance.payment.duration). Keep the spans + tags below
-# rich; the metrics follow automatically. Docs:
-# https://docs.datadoghq.com/tracing/trace_pipeline/generate_metrics/
-
-
-# ---------------------------------------------------------------------------
-# Structured JSON logging
-# ---------------------------------------------------------------------------
-# Use python-json-logger so every log line is machine-parseable JSON.
-# Datadog Log Management ingests this format without a custom pipeline.
-# When Step 4 (DD_LOGS_INJECTION=true) is enabled, dd.trace_id and
-# dd.span_id are automatically appended to every record by ddtrace.
-#
-# NOTE: this only covers loggers built via _build_logger() below (the app's
-# own "gateway-api" logger). uvicorn's own "uvicorn"/"uvicorn.access" loggers
-# are separate and, left unconfigured, print plain text with no `level` field
-# -- Datadog's automatic status detection then misclassifies lines like
-# "INFO:     Uvicorn running on ..." as status:error. See logging_config.json
-# (passed to uvicorn via --log-config in the Dockerfile CMD) which routes
-# those loggers through the same JSON formatter.
-
 
 def _build_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
@@ -69,9 +34,7 @@ def _build_logger(name: str) -> logging.Logger:
     logger.propagate = False
     return logger
 
-
 log = _build_logger("gateway-api")
-
 
 # ---------------------------------------------------------------------------
 # App bootstrap
@@ -118,7 +81,6 @@ _jwks_cache_fetched_at: float = 0.0
 #      waiting for the TTL to expire.
 JWKS_CACHE_TTL_SECONDS = 300
 
-
 async def _get_jwks(force_refresh: bool = False) -> dict:
     """Fetch Keycloak's public JWKS and cache in-memory, with a TTL."""
     global _jwks_cache, _jwks_cache_fetched_at
@@ -131,14 +93,13 @@ async def _get_jwks(force_refresh: bool = False) -> dict:
             _jwks_cache_fetched_at = time.time()
     return _jwks_cache
 
-
 async def verify_token(request: Request) -> dict:
     """
     FastAPI dependency — validates the Bearer JWT from the Authorization header.
 
     Returns decoded token claims:
-      - claims["sub"]    — opaque user subject UUID (safe as a span tag)
-      - claims["email"]  — user email (PII — use sub in span tags instead)
+      - claims["sub"]    — opaque user subject UUID (not PII)
+      - claims["email"]  — user email (PII)
       - claims["roles"]  — list of Keycloak realm roles
 
     Raises HTTP 401 if the token is missing, expired, or has an invalid signature.
@@ -190,7 +151,6 @@ async def verify_token(request: Request) -> dict:
         log.warning("auth.token_invalid", extra={"error": str(exc)})
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-
 # Shared async HTTP client.
 # keepalive_expiry=5 ensures stale connections to restarted containers are
 # discarded quickly. retries=1 transparently reconnects on a dead connection
@@ -205,11 +165,9 @@ http_client = httpx.AsyncClient(
     ),
 )
 
-
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
-
 
 class PaymentRequest(BaseModel):
     amount: float = Field(..., gt=0, description="Payment amount (must be positive)")
@@ -218,7 +176,6 @@ class PaymentRequest(BaseModel):
     )
     account_id: str = Field(..., description="Source account identifier")
 
-
 class PaymentResponse(BaseModel):
     payment_id: str
     status: str
@@ -226,19 +183,16 @@ class PaymentResponse(BaseModel):
     currency: str
     account_id: str
 
-
 class BalanceResponse(BaseModel):
     account_id: str
     balance: float
     currency: str
-
 
 class DepositRequest(BaseModel):
     amount: float = Field(..., gt=0, description="Amount to credit to the account")
     note: str | None = Field(
         None, description="Optional description (e.g. 'Initial funding')"
     )
-
 
 class DepositResponse(BaseModel):
     account_id: str
@@ -247,7 +201,6 @@ class DepositResponse(BaseModel):
     currency: str
     tier: str
 
-
 class TransferRequest(BaseModel):
     from_account_id: str = Field(..., description="Source account ID")
     to_account_id: str = Field(..., description="Destination account ID")
@@ -255,7 +208,6 @@ class TransferRequest(BaseModel):
     currency: str = Field(
         ..., min_length=3, max_length=3, description="ISO 4217 currency code"
     )
-
 
 class TransferResponse(BaseModel):
     transfer_id: str
@@ -266,7 +218,6 @@ class TransferResponse(BaseModel):
     status: str
     created_at: str
 
-
 class PaymentValidationRequest(BaseModel):
     action: str = Field(
         ...,
@@ -274,7 +225,6 @@ class PaymentValidationRequest(BaseModel):
         description="Validation decision: approved | rejected | flagged",
     )
     note: str | None = Field(None, description="Optional compliance note")
-
 
 class PaymentDetail(BaseModel):
     payment_id: str
@@ -286,11 +236,9 @@ class PaymentDetail(BaseModel):
     validated_at: str | None = None
     note: str | None = None
 
-
 # ---------------------------------------------------------------------------
 # Middleware — request logging
 # ---------------------------------------------------------------------------
-
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -322,17 +270,14 @@ async def log_requests(request: Request, call_next):
     )
     return response
 
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
 
 @app.get("/health")
 async def health():
     """Liveness probe — returns 200 when the service is ready."""
     return {"status": "ok", "service": "gateway-api"}
-
 
 @app.get("/v1/payments", response_model=list[PaymentDetail])
 async def list_payments(claims: dict = Depends(verify_token)):
@@ -351,7 +296,6 @@ async def list_payments(claims: dict = Depends(verify_token)):
     except httpx.HTTPError as exc:
         log.warning("transaction-service.unreachable", extra={"error": str(exc)})
         return []
-
 
 @app.patch("/v1/payments/{payment_id}", response_model=PaymentDetail)
 async def validate_payment(
@@ -436,7 +380,6 @@ async def validate_payment(
 
     return payment_data
 
-
 @app.post("/v1/accounts/{account_id}/deposit", response_model=DepositResponse)
 async def deposit(
     account_id: str,
@@ -483,7 +426,6 @@ async def deposit(
         currency=data["currency"],
         tier=data["tier"],
     )
-
 
 @app.post("/v1/transfers", response_model=TransferResponse, status_code=201)
 async def transfer(
@@ -585,7 +527,6 @@ async def transfer(
         created_at=created_at,
     )
 
-
 @app.post("/v1/payments", response_model=PaymentResponse, status_code=201)
 async def initiate_payment(
     payload: PaymentRequest,
@@ -599,9 +540,8 @@ async def initiate_payment(
     and returns a payment_id for downstream tracking.
     Requires a valid Keycloak Bearer token.
     """
-    user_sub = claims.get("sub", "unknown")  # opaque UUID — safe as a span tag
+    user_sub = claims.get("sub", "unknown")  # opaque UUID, not PII
     user_roles = claims.get("roles", [])  # e.g. ["finance-trader"]
-    # user_email = claims.get("email")          # PII — do not use as a span tag
 
     # Role enforcement: only finance-trader and finance-admin may initiate payments.
     # finance-analyst and finance-auditor are read-only roles.
@@ -626,12 +566,6 @@ async def initiate_payment(
             "payment_id": payment_id,
             "account_id": payload.account_id,
             "currency": payload.currency,
-            # ── HIGH-CARDINALITY WARNING ────────────────────────────
-            # Do NOT log raw amount values as tags — use bucketed ranges
-            # for metrics. Log the exact value here (log volume is bounded)
-            # but never emit it as a DogStatsD tag.
-            # Docs: https://docs.datadoghq.com/tagging/assigning_tags/
-            # ─────────────────────────────────────────────────────
             "amount": payload.amount,
             # ── SECURITY NOTE ─────────────────────────────────────────────
             # Never log card numbers, IBANs, SSNs, or raw account
@@ -642,18 +576,6 @@ async def initiate_payment(
             "user.roles": user_roles,
         },
     )
-
-    # resource MUST be a bounded, normalised value. Using the raw account_id
-    # here would create one APM resource per account (unbounded cardinality).
-    # The account id is still captured as a span tag below for trace search.
-    with tracer.trace(
-        "payment.authorize", service="gateway-api", resource="POST /v1/payments"
-    ) as span:
-        span.set_tag("transaction.type", "payment")
-        span.set_tag("payment.currency", payload.currency)
-        span.set_tag("account.id", payload.account_id)  # bounded — safe as tag
-        span.set_tag("user.id", user_sub)  # UUID from Keycloak — safe, not PII
-        span.set_tag("user.roles", ",".join(user_roles))  # e.g. "finance-trader"
 
     # --- Stub: call transaction-service ---
     # In a real deployment this POST reaches the Node.js transaction-service.
@@ -716,10 +638,6 @@ async def initiate_payment(
         },
     )
 
-    # (Custom metrics finance.payment.hits / finance.payment.duration are
-    # generated from the payment.authorize span above via span-based metrics
-    # in deploy/terraform/datadog — no DogStatsD emission here.)
-
     return PaymentResponse(
         payment_id=payment_id,
         status=tx_status,
@@ -727,7 +645,6 @@ async def initiate_payment(
         currency=payload.currency,
         account_id=payload.account_id,
     )
-
 
 @app.get("/v1/accounts/{account_id}/balance", response_model=BalanceResponse)
 async def get_account_balance(
@@ -747,17 +664,6 @@ async def get_account_balance(
         "account.balance_check.start",
         extra={"account_id": account_id, "user.id": user_sub, "user.roles": user_roles},
     )
-
-    # resource MUST be a bounded, normalised route — never the raw account_id
-    # (that would create one APM resource per account). The account id remains
-    # a span tag for trace search.
-    with tracer.trace(
-        "account.balance_check",
-        service="gateway-api",
-        resource="GET /v1/accounts/{account_id}/balance",
-    ) as span:
-        span.set_tag("account.id", account_id)
-        span.set_tag("http.route", "/v1/accounts/{account_id}/balance")
 
     # --- Stub: call account-service ---
     try:
@@ -784,11 +690,9 @@ async def get_account_balance(
 
     return BalanceResponse(account_id=account_id, balance=balance, currency=currency)
 
-
 # ---------------------------------------------------------------------------
 # Startup / shutdown lifecycle
 # ---------------------------------------------------------------------------
-
 
 @app.on_event("startup")
 async def on_startup():
@@ -801,7 +705,6 @@ async def on_startup():
             "transaction_service_url": TRANSACTION_SERVICE_URL,
         },
     )
-
 
 @app.on_event("shutdown")
 async def on_shutdown():

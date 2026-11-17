@@ -59,6 +59,11 @@ output "frontend_keycloak_https_url" {
   value       = "https://${aws_lb.frontend.dns_name}:8443"
 }
 
+output "frontend_keycloak_acm_url" {
+  description = "Browser-trusted HTTPS URL for Keycloak (real ACM cert, no security warning) — only set when domain_name is configured. Use this instead of frontend_keycloak_https_url for KEYCLOAK_PUBLIC_URL when you want no self-signed-cert click-through at all."
+  value       = var.domain_name != "" ? "https://${var.domain_name}:9443" : ""
+}
+
 output "deploy_command" {
   description = "Run this after configuring kubectl to deploy the Finance app to EKS."
   value       = "make deploy-k8s"
@@ -92,7 +97,7 @@ output "ecr_registry_id" {
 
 output "ecr_login_command" {
   description = "Run this command to authenticate Docker with ECR before pushing images."
-  value       = "aws ecr get-login-password --region ${var.aws_region}${var.aws_profile != "" ? " --profile ${var.aws_profile}" : ""} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  value       = "aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
 # =============================================================================

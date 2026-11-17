@@ -16,24 +16,6 @@ COPY src/ ./src/
 # Drop privileges before starting the process
 USER appuser
 
-# ── DATADOG INSTRUMENTATION ──────────────────────────────────────────
-# Step 3 — to enable APM via the dd-trace Node.js library:
-#   1. Run: npm install dd-trace --save  (locally, then rebuild image)
-#   2. Uncomment the --require flag below.
-#   3. The tracer is initialised before any application code loads,
-#      which is equivalent to placing require('dd-trace').init() as
-#      the very first line of src/index.js — but does not require
-#      modifying source code.
-#
-# CMD ["node", "--require", "dd-trace/init", "src/index.js"]
-#
-# Step 7 — Continuous Profiler is enabled via the tracer config
-# (profiling: true in src/index.js) or via env var:
-# ENV DD_PROFILING_ENABLED=true
-#
-# Docs: https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/nodejs/
-# ─────────────────────────────────────────────────────────────────────
-
 EXPOSE 8082
 
 CMD ["node", "src/index.js"]

@@ -1,276 +1,139 @@
-# Finance Sample App — Troubleshooting Guide
+# Troubleshooting
 
-When something isn't working, resist the urge to chase the first error message
-you see. This app has six layers between "I ran a command" and "I see data in
-Datadog," and a failure in an early layer often produces a confusing symptom
-in a much later one (e.g. a Keycloak secret mismatch shows up as "no traces in
-APM," not as an auth error).
+When something doesn't work, resist chasing the first error you see. There are six layers between "I ran a command" and "I see data in Datadog", and a failure in an early layer often looks like a problem in a much later one. A Keycloak secret mismatch, for example, shows up as "no traces in APM", not as an auth error.
 
-Work through the layers **in order**. Confirm each one is healthy before
-investigating the next — this avoids debugging a real problem in Layer 5 when
-the actual root cause is a broken Layer 2.
+Work through the layers in order and confirm each one before you look at the next.
 
 ```
-Infrastructure → Application → Identity → Instrumentation → Telemetry → Backend
+Infrastructure → Application → Identity → Agent → Instrumentation → Backend
 ```
 
 | # | Layer | Question |
 |---|---|---|
 | 1 | Infrastructure | Is Kubernetes healthy? |
-| 2 | Application | Is the application healthy? |
+| 2 | Application | Is the app healthy? |
 | 3 | Identity | Is authentication working? |
-| 4 | Instrumentation | Was instrumentation injected? |
-| 5 | Telemetry | Is telemetry reaching the Agent? |
-| 6 | Backend | Is Datadog ingesting the data? |
+| 4 | Agent | Is the Datadog Agent running and connected to your org? |
+| 5 | Instrumentation | Is each service sending telemetry to the Agent? |
+| 6 | Backend | Is Datadog receiving and processing it? |
+
+For the layer-6 symptom "nothing shows up anywhere", check the site first. It is the most common mistake in this exercise.
+
+The commands below assume you installed the Agent in a `datadog` namespace and named your `DatadogAgent` `datadog`. Adjust them if you didn't.
 
 ---
 
-## 1 — Infrastructure: Is Kubernetes healthy?
+## 1. Infrastructure: is Kubernetes healthy?
 
 ```bash
-kubectl get nodes                    # all Ready
-kubectl get pods -n finance          # all Running (12 pods, incl. traffic-generator)
-kubectl get pods -n datadog          # Agent DaemonSet + Cluster Agent Running
+kubectl get nodes                          # all Ready
+kubectl get pods -n finance                # 12 pods Running
 kubectl get events -n finance --sort-by='.lastTimestamp' | tail -20
 ```
 
-**Common failures at this layer:**
-- Pods stuck in `Pending` — usually insufficient CPU/memory on the local
-  cluster (Docker Desktop/Colima resource limits) or, on EKS, a node group
-  that hasn't scaled up yet.
-- Pods `CrashLoopBackOff` — check `kubectl logs -n finance <pod> --previous`.
-  If it's the Datadog Operator specifically, see
-  [INSTRUMENTATION.md's troubleshooting](./INSTRUMENTATION.md#troubleshooting)
-  for the `maximumGoroutines` fix.
-- `ImagePullBackOff` on local — you likely skipped the image-load step for
-  your local Kubernetes tool (kind/k3d/minikube/Colima all require it; Docker
-  Desktop/Rancher Desktop don't). See root README's Prerequisites.
-- **EKS node group `CREATE_FAILED` / `NodeCreationFailure: Instances failed to
-  join the kubernetes cluster`** — before debugging the node group itself, check
-  whether `tf-apply-aws` actually failed *earlier* on the VPC's NAT gateway EIP
-  with `AllocateAddress ... AddressLimitExceeded: The maximum number of addresses
-  has been reached`. If the NAT gateway's Elastic IP couldn't be allocated (the
-  account/region hit its EIP quota — often due to orphaned, unattached EIPs left
-  by other projects), the private-subnet nodes have **no outbound internet path**
-  and can't reach the cluster to join — which surfaces as the (misleading)
-  node-join error, not as an EIP error. Diagnose the real cause with
-  `aws ec2 describe-addresses` (look for rows with no `AssociationId` — those are
-  orphaned; release them), or raise the quota:
-  `aws service-quotas request-service-quota-increase --service-code ec2 --quota-code L-0263D0A3 --desired-value <N>`.
-  `make tf-apply-aws` is idempotent — re-run it once the EIP situation is resolved.
+- **Pods stuck in `Pending`:** the cluster is out of CPU or memory. Raise the limits in Docker Desktop or Colima. On EKS, the node group may still be scaling.
+- **`ImagePullBackOff` on a local cluster:** you skipped loading the images. kind, k3d, minikube and Colima need it, Docker Desktop and Rancher Desktop don't. See the README, "Loading images into your cluster".
+- **`CrashLoopBackOff`:** run `kubectl logs -n finance <pod> --previous`.
 
-**Do not proceed past this layer** until every pod in both namespaces is
-`Running`. Everything downstream assumes a healthy cluster.
+Don't go further until every pod is `Running`.
 
----
-
-## 2 — Application: Is the application healthy?
+## 2. Application: is the app healthy?
 
 ```bash
-kubectl exec -n finance deploy/gateway-api -- curl -s localhost:8080/health
-kubectl port-forward svc/gateway-api 8080:8080 -n finance &
-curl -s http://localhost:8080/health
+kubectl port-forward svc/gateway-api 8080:8080 -n finance
+curl -s http://localhost:8080/health       # in a second terminal
+kubectl logs -n finance deploy/<service>
 ```
 
-**Common failures at this layer:**
-- `500` errors on `/health` — check the failing service's own logs
-  (`kubectl logs -n finance deploy/<service>`) for a stack trace. This is
-  almost always a real application bug, not a Datadog problem — rule it out
-  before assuming instrumentation broke something.
-- A service can't reach PostgreSQL/ActiveMQ/Redis — check the init containers
-  (`wait-for-postgres`, `wait-for-activemq`) completed:
-  `kubectl logs -n finance <pod> -c wait-for-postgres`.
-- ActiveMQ STOMP messages silently never arrive at a consumer — this is a
-  broker-side address-naming mismatch (`anycastPrefix`/`multicastPrefix`),
-  not an application bug. See the comment header in
-  `deploy/kubernetes/base/infrastructure/activemq-broker-config.yaml`.
+- **A service can't reach PostgreSQL, ActiveMQ or Redis:** check that its wait init containers finished, for example `kubectl logs -n finance <pod> -c wait-for-postgres`.
+- **A service started crashing after you changed it:** compare its manifest with `git diff`. A YAML indentation slip in `env` or `annotations` is the usual cause.
+- **STOMP messages never reach a consumer:** that is a broker address naming issue, not an app bug. See the header of `deploy/kubernetes/base/infrastructure/activemq-broker-config.yaml`.
 
----
-
-## 3 — Identity: Is authentication working?
+## 3. Identity: is authentication working?
 
 ```bash
-# From the finance namespace, log in as a real user and confirm you get a token:
-kubectl run -it --rm curl-test --image=curlimages/curl -n finance --restart=Never -- \
-  curl -s -X POST http://keycloak:8080/realms/finance/protocol/openid-connect/token \
-    -d grant_type=password -d client_id=finance-gateway \
-    -d client_secret=<real-secret-from-app-secrets> \
-    -d username=carol.admin -d password='Finance@2025!'
+kubectl logs -n finance deploy/traffic-generator --tail=50
 ```
 
-**Common failures at this layer:**
-- `invalid_client_credentials` (401) — the caller's `KEYCLOAK_CLIENT_SECRET`
-  doesn't match the real secret. The in-cluster `traffic-generator` reads it
-  correctly from the `app-secrets` K8s Secret automatically; if you're
-  running `scripts/generate-traffic.py` or `scripts/test-e2e.py` manually from
-  your laptop, make sure `KEYCLOAK_CLIENT_SECRET` is exported from the real
-  secret (`kubectl get secret app-secrets -n finance -o jsonpath='{.data.keycloak-client-secret}' | base64 -d`),
-  not left at the `REPLACE_WITH_SECRET` placeholder default.
-- Browser login fails on EKS — this is a family of related issues around the
-  Keycloak public URL and origins. Work through them in this order:
-  - **`Login failed: Keycloak HTTP 405`** — `KEYCLOAK_PUBLIC_URL` (in the
-    `app-config` ConfigMap, and the `KEYCLOAK_BASE` JS constant baked into the
-    `frontend-dashboard` ConfigMap) was patched to the wrong Terraform output.
-    Keycloak is served on the NLB's **HTTPS `:8443`** listener
-    (`terraform output -raw frontend_keycloak_https_url`), **not** the plain
-    HTTP `:80` dashboard URL (`frontend_url`). If you use `frontend_url`, the
-    login token POST hits nginx's static-file `location /` (no `/realms/` route
-    there), and nginx returns 405 for the non-GET request. Fix: re-patch using
-    `frontend_keycloak_https_url` (see the AWS EKS workflow, step 8).
-  - **`Login failed: Failed to fetch`** (after the 405 is fixed) — a CORS
-    rejection. The `finance-gateway` client in
-    `identity-provider/realm-export/finance-realm.json` hardcodes
-    `redirectUris`/`webOrigins` to `localhost:30080`/`:30443`, so the dashboard
-    JS's cross-origin token fetch from the NLB hostname is blocked (browsers
-    don't expose CORS details to JS, hence the generic message). Fix the running
-    client via the Keycloak Admin Console (Clients → finance-gateway → Access
-    settings → add `http://<nlb-host>` and `https://<nlb-host>:8443` to **Valid
-    redirect URIs** (with `/*`) and **Web origins**), or `kcadm.sh` from the pod.
-    Durable fix: template `redirectUris`/`webOrigins` at deploy time (or set
-    `"webOrigins": ["+"]` to auto-derive origins from `redirectUris`) — see the
-    root-cause note below.
-  - **Login worked, then broke again "for no reason"** — any of these resets the
-    fix: re-running `make deploy-k8s-eks` (its `create_frontend_cm` macro rebuilds
-    `frontend-dashboard` from `frontend-stub/index.html` using
-    `KEYCLOAK_PUBLIC_URL` as read from `deploy/kubernetes/base/01-config.yaml` on
-    disk — still `https://localhost:30443` — not the live patched value), or any
-    Keycloak pod restart (rollout, node replacement, OOM, redeploy). **Root
-    cause:** Keycloak runs `start-dev --import-realm` with in-memory H2 and no
-    PVC (`deploy/kubernetes/base/infrastructure/keycloak.yaml`), so every restart
-    wipes Admin-Console edits and re-imports the static `localhost`-only realm
-    JSON. This is fine for local dev but a real gotcha on EKS. The durable fix for
-    the whole family is to template `01-config.yaml`'s `KEYCLOAK_PUBLIC_URL` and
-    the realm's `redirectUris`/`webOrigins` at deploy time (e.g. in
-    `scripts/generate-eks-kustomization.sh`, driven by the `frontend_url` /
-    `frontend_keycloak_https_url` Terraform outputs), so a fresh deploy is correct
-    every time with no manual Admin-Console step.
-- **A failure here is very often mistaken for an instrumentation or telemetry
-  problem** — a payment request that 401s never generates the `ledger.commit`
-  span you were expecting to see in APM, but the "missing span" is a symptom,
-  not the cause. Always confirm auth is working (Layer 3) before debugging
-  "why don't I see this span" (Layer 4/5).
+- **The traffic generator shows 401 or `invalid_client_credentials`:** the client secret it uses doesn't match Keycloak's. Check the `app-secrets` Secret and the `traffic-generator` Deployment.
+- **Dashboard login fails with `NetworkError` or "Failed to fetch":** you haven't accepted the self-signed certificate at `https://localhost:30443` in this browser yet.
+- **Login redirects to the wrong host:** `KEYCLOAK_PUBLIC_URL` in the `app-config` ConfigMap doesn't match how you reach the app. This mostly happens on EKS. See [EKS.md](./EKS.md).
 
----
+A request that fails auth never produces the trace you were looking for. Confirm this layer before you debug "why is my span missing".
 
-## 4 — Instrumentation: Was instrumentation injected?
+## 4. Agent: is it running and connected?
 
 ```bash
-# Init containers present? (Admission Controller auto-injection, Single Step Instrumentation)
-kubectl get pod -n finance -l app=gateway-api \
-  -o jsonpath='{.items[0].spec.initContainers[*].name}'
-# Expected: datadog-lib-python-init datadog-init-apm-inject
-# (datadog-lib-java-init / -js-init / -go-init for the other services)
-
-# Required label present on the pod template?
-kubectl get pod -n finance -l app=gateway-api \
-  -o jsonpath='{.items[0].metadata.labels.admission\.datadoghq\.com/enabled}'
-# Expected: true
-
-# Tracer actually loaded inside the container?
-kubectl exec -n finance deploy/gateway-api -- env | grep DD_INSTRUMENTATION_INSTALL_TYPE
-# Expected: DD_INSTRUMENTATION_INSTALL_TYPE=k8s_lib_injection (or similar)
+kubectl get pods -n datadog
+kubectl get datadogagent -n datadog
+kubectl exec -n datadog ds/datadog-agent -c agent -- agent status
+kubectl logs -n datadog ds/datadog-agent -c agent --tail=100
 ```
 
-**Common failures at this layer:**
-- Init containers missing entirely — the Admission Controller webhook isn't
-  reaching the pod. This has `failurePolicy: Ignore`, so pods still start
-  successfully with **no error at all** — the only symptom is instrumentation
-  silently not happening. See
-  [INSTRUMENTATION.md's Admission Controller troubleshooting](./INSTRUMENTATION.md#admission-controller-injection-not-working).
-- On EKS specifically: the control plane can't reach the Cluster Agent's
-  webhook on node port 8000 — check the node security group has the
-  `ingress_cluster_8000_datadog_admission_webhook` rule (see
-  `deploy/terraform/aws/main.tf`).
-- `make instrument` (In-depth instrumentation custom spans/metrics/RUM) reports patch failures
-  or `.rej` files — this means the patch files are stale relative to the
-  current source. Regenerate them: `python3 scripts/generate-patches.py`,
-  then re-run `make instrument`. It's idempotent — running it twice in a row
-  is a safe no-op (tracked via `.instrumentation-applied`).
+- **API key shown as invalid in `agent status`:** the Secret holds the wrong key, or the key belongs to a different org.
+- **Valid key but nothing in your org:** the `site` in your `DatadogAgent` is wrong. It must match the URL you log in on. See the README, "Before you start".
+- **Errors about kubelet certificates:** common on local clusters. See the Task 1 hints in [HINTS.md](./HINTS.md#task-1-agent).
+- **Operator installed but no Agent pods:** check the Operator's logs, `kubectl logs -n datadog deploy/<operator deployment>`. It usually means the `DatadogAgent` spec has an error.
+- **You changed the `DatadogAgent` but nothing happened:** confirm you re-applied it and that `kubectl get datadogagent -n datadog` reflects the change. The Operator then rolls the Agent pods.
 
----
-
-## 5 — Telemetry: Is telemetry reaching the Agent?
+## 5. Instrumentation: is each service sending to the Agent?
 
 ```bash
-# From inside a service pod, can it reach the node's Agent?
-kubectl exec -n finance deploy/gateway-api -- env | grep DD_AGENT_HOST
-DD_HOST=$(kubectl exec -n finance deploy/gateway-api -- env | grep DD_AGENT_HOST | cut -d= -f2)
-kubectl exec -n finance deploy/gateway-api -- wget -qO- http://$DD_HOST:8126/info
+# Did Single Step Instrumentation inject this pod?
+kubectl get pod -n finance -l app=gateway-api -o jsonpath='{.items[0].spec.initContainers[*].name}'; echo
 
-# Is the Agent actually receiving anything?
-kubectl exec -n datadog daemonset/datadog-agent -c trace-agent -- \
-  agent status | grep -A5 "Traces received"
+# Which Datadog env vars did the pod end up with?
+kubectl exec -n finance deploy/gateway-api -- env | grep '^DD_'
+
+# Is the Agent receiving traces?
+kubectl exec -n datadog ds/datadog-agent -c trace-agent -- agent status | grep -A5 "Receiver"
 ```
 
-**Common failures at this layer:**
-- `DD_AGENT_HOST` unset or pointing at the wrong address — should resolve via
-  the Downward API to `status.hostIP` (the node running the pod), not
-  `localhost` or a hardcoded IP.
-- Agent DaemonSet pod on that specific node isn't `Running` — traces from
-  pods scheduled on a broken node never reach any Agent, while pods on
-  healthy nodes work fine. Check `kubectl get pods -n datadog -o wide` and
-  compare node names against the failing service's pod.
-- Agent integration checks failing (DBM, ActiveMQ JMX) —
-  `kubectl exec -n datadog daemonset/datadog-agent -c agent -- agent status`.
-  `'no valid instances'` means the check YAML in
-  `deploy/kubernetes/datadog/checks/` needs review; `'authentication failed'`
-  means the DBM/JMX credentials in the `datadog-secret` are wrong.
+- **No Datadog init containers on the pod:**
+  - The pod was created before you enabled instrumentation. Restart it with `kubectl rollout restart deployment -n finance`.
+  - The pod is in the Agent's own namespace. Single Step Instrumentation skips that namespace.
+  - Your namespace or pod targeting doesn't match `finance`.
+  - The admission controller is disabled.
+- **Some services traced, `notification-service` not:** expected. Go isn't supported by Single Step Instrumentation. See stretch goal S1.
+- **Injected, but the Agent receives nothing:** the tracer can't reach the Agent. Check that APM is enabled on the Agent and that the pod knows the Agent's address.
+- **Logs arrive but have no trace IDs:** see the Task 5 language notes in [HINTS.md](./HINTS.md#task-5-log-and-trace-correlation).
+- **Tag or env var changes didn't take effect:** `kubectl rollout restart` doesn't re-read the manifest files. Run `make deploy-k8s` to re-apply them.
+- **The RUM snippet change didn't take effect:** the page comes from the `frontend-dashboard` ConfigMap. Run `make deploy-k8s` to rebuild it, restart `frontend`, then hard-refresh the browser.
+- **No Database Monitoring data:** run `agent status` and find the `postgres` check.
+  - `authentication failed`: wrong user or password.
+  - `permission denied`: missing grants.
+  - No check listed at all: the Autodiscovery annotation isn't on the `postgres-ledger` pod, or it doesn't match the container name.
+- **A service crashes with "Cannot find module 'dd-trace'" or `ModuleNotFoundError: ddtrace`:** your custom code imports the tracer directly, but the tracer is only injected at runtime. See stretch goal S2.
 
----
-
-## 6 — Backend: Is Datadog ingesting the data?
+## 6. Backend: is Datadog receiving it?
 
 ```bash
-# API key valid?
-curl -s "https://api.datadoghq.com/api/v1/validate" -H "DD-API-KEY: ${DD_API_KEY}"
-# Expected: {"valid":true}
+# Use your site's API host, for example api.datadoghq.eu
+curl -s "https://api.<your site>/api/v1/validate" -H "DD-API-KEY: <your API key>"
 ```
 
-**Common failures at this layer:**
-- `{"valid":false}` — `DD_API_KEY` is wrong, or you copied the **Application
-  Key ID** instead of the **Application Key value** for `DD_APP_KEY` (these
-  are different things — the Datadog UI's Application Keys page prominently
-  shows the Key ID, which is *not* what Terraform needs). See root README's
-  Prerequisites for a visual example of the difference.
-- Data reaches the Agent (Layer 5 confirmed OK) but never appears in the UI —
-  check `DD_SITE` matches your org's actual site (`datadoghq.com` vs.
-  `datadoghq.eu` vs. `us3.datadoghq.com`, etc.) in both the Agent config and
-  `deploy/terraform/datadog/staging.tfvars`.
-- `terraform plan`/`apply` fails with a provider schema error (e.g. unknown
-  attribute) — the Datadog Terraform provider version has drifted from what
-  the resource blocks expect. Pin the provider version explicitly in
-  `deploy/terraform/datadog/main.tf`'s `required_providers` block and re-run
-  `terraform init -upgrade=false`.
-- `terraform plan`/`apply` fails immediately with `Failed to read variables
-  file` — `staging.tfvars` doesn't exist yet. This self-heals automatically
-  now (`make tf-plan-dd`/`tf-apply-dd` auto-copy from `staging.tfvars.example`
-  on first use) — if you still hit this, you're likely calling `terraform`
-  directly instead of through `make`.
-- **AWS** `terraform plan`/`apply` prints a `Deprecated attribute` warning for
-  `data.aws_region.current[0].name` (from the vendored
-  `terraform-aws-modules/vpc/aws` module's `vpc-flow-logs.tf`) — **non-blocking**;
-  plan/apply still succeed. It's the older `.name` attribute vs. the newer
-  `.region` on the AWS provider's region data source. If you bump the `hashicorp/aws`
-  provider or the `vpc` module version later it could become a hard error — pin
-  the module/provider versions in `deploy/terraform/aws/main.tf`, or bump the `vpc`
-  module to a release that has fixed it, when you next touch that code.
+- **`{"valid":false}`:** wrong key, or the wrong site for this key.
+- **Data in some products but not others:** look at the products individually.
+  - Logs need log collection on the Agent.
+  - RUM needs the Browser SDK's own `site` set.
+  - Terraform needs the provider's API URL for your site.
+  - Each one must use the same site.
+- **Logs arrive but every line has INFO status:** see the Task 3 hints about the level field.
+- **Expected traces are missing at high volume:** check ingestion controls and sampling under APM settings before assuming instrumentation is broken.
 
 ---
 
 ## Quick reference: which layer explains this symptom?
 
-| Symptom | Most likely layer |
+| Symptom | Start at |
 |---|---|
-| Pod won't start | 1 — Infrastructure |
-| `curl /health` fails or times out | 2 — Application |
-| `401` / `invalid_client_credentials` on any request | 3 — Identity |
-| Service works fine but no traces at all in APM | 4 — Instrumentation |
-| One service's traces work, another's don't | 4 — Instrumentation (check that specific pod's init containers) |
-| Traces flow for most requests but randomly stop | 5 — Telemetry (check Agent pod on that node) |
-| Everything "looks connected" but nothing shows up in the Datadog UI | 6 — Backend (API key / site / provider version) |
-| `terraform plan`/`apply` fails before touching any real infrastructure | 6 — Backend (config/provider issue, not a live-environment issue) |
-
-## See also
-
-- [INSTRUMENTATION.md](./INSTRUMENTATION.md) — full step-by-step instrumentation guide, with its own per-step `Validate:` checks and a dedicated Troubleshooting section for Admission Controller / APM / Agent-check / patch failures.
-- [README.md](./README.md) — Quick Start, Adding Datadog, and Traffic Generator sections each have a "✅ Verify before continuing" checklist for the corresponding stage.
+| Pod won't start | 1 |
+| `/health` fails or times out | 2 |
+| 401 or `invalid_client_credentials` | 3 |
+| Agent pods missing or crashing | 4 |
+| Agent healthy, org completely empty | 4, then 6 (site) |
+| Logs arrive, no traces at all | 5 |
+| One service traced, another not | 5 (that pod's init containers) |
+| Traces arrive, logs not linked | 5 (log injection) |
+| Some products have data, others don't | 6 |
+| Errors show as INFO | 6 (status remapping) |
