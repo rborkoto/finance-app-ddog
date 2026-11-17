@@ -17,6 +17,7 @@ The Makefile only builds and deploys the application. Everything Datadog-related
 2. [Before you start](#before-you-start)
 3. [The application](#the-application)
 4. [Part A: Deploy the application](#part-a-deploy-the-application)
+   - [Deploy on AWS EKS (optional)](#deploy-on-aws-eks-optional)
 5. [Part B: Core tasks](#part-b-core-tasks)
 6. [Part C: Stretch goals](#part-c-stretch-goals)
 7. [Part D: Diagnosis exercises](#part-d-diagnosis-exercises)
@@ -51,7 +52,8 @@ Keep notes as you go: what you changed, where, and why. A real customer would as
 | An **Application key** | Only for the Terraform stretch goal. Use the key **value**, not the Key ID. |
 | A local Kubernetes cluster | Docker Desktop with Kubernetes enabled is the simplest. Rancher Desktop, kind, k3d, minikube and Colima also work (see [Loading images](#loading-images-into-your-cluster)). |
 | `docker`, `kubectl`, `helm`, `make` | Run from macOS, Linux, or WSL2 on Windows. |
-| `terraform` 1.5 or later | Only for the optional [AWS EKS path](./EKS.md) and the Terraform stretch goal. |
+| `terraform` 1.5 or later | Only for the optional [AWS EKS path](#deploy-on-aws-eks-optional) and the Terraform stretch goal. |
+| AWS CLI 2.x with an SSO profile (`aws configure sso`) | Only for the optional [AWS EKS path](#deploy-on-aws-eks-optional). |
 
 Give your local cluster enough CPU and memory. It runs 12 application pods before you add Datadog. If pods stay `Pending`, raise the limits in your Docker Desktop or Colima settings.
 
@@ -120,6 +122,8 @@ Each service folder has a short README with its endpoints. Kubernetes manifests 
 
 ## Part A: Deploy the application
 
+Deploy to a local cluster (below), or to AWS EKS if you want public URLs (see [Deploy on AWS EKS](#deploy-on-aws-eks-optional)).
+
 ```bash
 make build
 # kind / k3d / minikube / Colima only: load the images now, see "Loading images" below
@@ -130,6 +134,103 @@ make deploy-k8s
 - `kubectl get pods -n finance` shows 12 pods `Running`.
 - `kubectl logs -n finance deploy/traffic-generator -f` shows 200 and 201 responses, not a wall of 401s.
 - Open `https://localhost:30443` once and accept the self-signed certificate warning. Then open `http://localhost:30080` and log in as `carol.admin` / `Finance@2025!`.
+
+### Deploy on AWS EKS (optional)
+
+Use this instead of a local cluster if you want public URLs, for example to run Datadog synthetic tests from public locations. It costs money while it runs, so tear it down when you finish.
+
+Terraform in `deploy/terraform/aws/` creates the EKS cluster, VPC, ECR repositories, IAM roles, a Network Load Balancer for the frontend, and a CloudWatch log group. As with the local path, it installs nothing Datadog. It does create a few things you can choose to use:
+- **Secrets Manager entries:** empty `dd-api-key`, `dd-app-key` and `datadog-dbm-password` entries you can populate.
+- **IAM role:** `datadog_integration`, a read-only role for the Datadog AWS integration (see the `dd_integration_role_arn` output).
+- **Firewall rule:** a node security group rule for port 8000, which the Datadog Cluster Agent's admission controller needs on EKS.
+
+You need AWS CLI 2.x with an SSO profile (`aws configure sso`) and `terraform` 1.5 or later, plus the tools in [Before you start](#before-you-start).
+
+#### 1. Configure
+
+```bash
+aws sso login --profile <profile>
+cp deploy/terraform/aws/staging.tfvars.example deploy/terraform/aws/staging.tfvars
+# edit: aws_profile, aws_region, cluster_name
+```
+
+Decide now how Keycloak gets its certificate, because changing it later needs a re-apply:
+
+| Option | `staging.tfvars` | Result |
+|---|---|---|
+| A, self-signed (default) | leave `domain_name` and `route53_zone_id` empty | Keycloak on `:8443` with a self-signed certificate. Accept the browser warning once. |
+| B, your domain in Route 53 in this account | set `domain_name` and `route53_zone_id` | Keycloak on `:9443` with a trusted ACM certificate, fully automated |
+| C, your domain managed elsewhere | set `domain_name` only | Keycloak on `:9443` with a trusted ACM certificate, after you add DNS records (step 3) |
+
+The domain must be one you own: ACM can't issue a public certificate for the load balancer's own `*.elb.<region>.amazonaws.com` hostname. See `domain_name` and `route53_zone_id` in `deploy/terraform/aws/variables.tf` for details.
+
+#### 2. Provision (about 15 to 20 minutes)
+
+```bash
+make tf-plan-aws
+make tf-apply-aws
+make tf-configure-kubectl && kubectl get nodes
+```
+
+#### 3. Certificate DNS (option C only)
+
+1. `make tf-apply-aws` requests the certificate, which stays pending validation.
+2. Get the validation records and add each as a CNAME at your DNS provider (TTL 300 is fine):
+   ```bash
+   cd deploy/terraform/aws && terraform output -json acm_validation_records
+   ```
+   There is one record for `domain_name` and one for `www.<domain_name>`. Add both, even if you don't use `www.`, or the certificate never finishes validating.
+3. Point `domain_name` at the load balancer with a CNAME (or an ALIAS/ANAME record if `domain_name` is the zone apex): `terraform output -raw frontend_lb_dns_name`.
+4. Run `make tf-apply-aws` again. It waits up to 10 minutes for validation. If it times out while DNS propagates, run it again.
+
+#### 4. Deploy the app
+
+Export Keycloak's public URL and the dashboard URL first, so login works on the first deploy.
+
+Option A:
+```bash
+export FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_https_url)
+export DASH_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
+```
+
+Option B or C:
+```bash
+export FE_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_keycloak_acm_url)
+export DASH_URL=$(cd deploy/terraform/aws && terraform output -raw frontend_url)
+```
+
+Then build, push and deploy:
+```bash
+eval "$(cd deploy/terraform/aws && terraform output -raw ecr_login_command)"
+make build-ecr
+make deploy-k8s-eks
+```
+
+The dashboard is at `terraform output -raw frontend_url`. Checkpoint A applies as on the local path, with the EKS URLs instead of `localhost`.
+
+#### Differences from the local path
+
+- **Applying manifest changes:** run `make build-ecr && make deploy-k8s-eks` wherever the exercise says `make build` or `make deploy-k8s`.
+- **RUM snippet changes:** `make deploy-k8s-eks` also rebuilds the frontend ConfigMap with the right Keycloak URL. Run it after editing `frontend-stub/index.html`, then restart `frontend`.
+- **Kubelet TLS:** the local-cluster kubelet TLS workaround from the Task 1 hints is not needed on EKS. Leave verification on.
+
+#### If you forgot to export FE_URL and DASH_URL
+
+Dashboard login fails with a `NetworkError`. Export them as in step 4, run `make deploy-k8s-eks` again, then restart Keycloak and the frontend so they pick up the new values:
+
+```bash
+kubectl rollout restart deployment/keycloak deployment/frontend -n finance
+```
+
+Keycloak runs in dev mode with an in-memory database, so any Keycloak restart re-imports the realm from the ConfigMap that `make deploy-k8s-eks` generates.
+
+#### Tear down EKS
+
+```bash
+make tf-destroy-aws
+```
+
+This deletes the cluster and everything Terraform created, in the right order. Remove anything you created in Datadog separately.
 
 ---
 
@@ -312,6 +413,7 @@ Remove what you created in your sandbox when you are done:
 ```bash
 make teardown        # deletes the finance namespace and volumes, plus a 'datadog' namespace and
                      # 'datadog-operator' Helm release if you used those names
+make tf-destroy-aws  # EKS only: deletes the cluster and everything Terraform created
 ```
 
 If you used other names for your Agent namespace or Helm release, remove them yourself. Then delete the RUM application, monitors, SLO and dashboard you created in the Datadog UI, unless your Datadog contact wants to review them in your org.
@@ -401,7 +503,7 @@ Run `make help` for the full list. The main ones are `build`, `deploy-k8s`, `tea
 
 ### AWS EKS (optional)
 
-You can run the app on EKS instead of a local cluster. It costs money, takes longer, and makes synthetic tests possible. See [EKS.md](./EKS.md).
+You can run the app on EKS instead of a local cluster. It costs money, takes longer, and makes synthetic tests possible. See [Deploy on AWS EKS](#deploy-on-aws-eks-optional) in Part A.
 
 ### Security notes
 

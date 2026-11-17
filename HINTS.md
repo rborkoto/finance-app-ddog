@@ -189,7 +189,7 @@ Configure the Browser SDK to propagate trace headers to the API the dashboard ca
 
 **Goal:** an API test on the payment flow and a browser test on login.
 
-Datadog's public test locations cannot reach a local cluster. Use the [EKS path](./EKS.md), or run a private location inside your cluster.
+Datadog's public test locations cannot reach a local cluster. Use the [EKS path](./README.md#deploy-on-aws-eks-optional), or run a private location inside your cluster.
 
 **Docs:** [Synthetic Monitoring](https://docs.datadoghq.com/synthetics/)
 

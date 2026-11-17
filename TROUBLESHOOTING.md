@@ -57,7 +57,7 @@ kubectl logs -n finance deploy/traffic-generator --tail=50
 
 - **The traffic generator shows 401 or `invalid_client_credentials`:** the client secret it uses doesn't match Keycloak's. Check the `app-secrets` Secret and the `traffic-generator` Deployment.
 - **Dashboard login fails with `NetworkError` or "Failed to fetch":** you haven't accepted the self-signed certificate at `https://localhost:30443` in this browser yet.
-- **Login redirects to the wrong host:** `KEYCLOAK_PUBLIC_URL` in the `app-config` ConfigMap doesn't match how you reach the app. This mostly happens on EKS. See [EKS.md](./EKS.md).
+- **Login redirects to the wrong host:** `KEYCLOAK_PUBLIC_URL` in the `app-config` ConfigMap doesn't match how you reach the app. This mostly happens on EKS. See [Deploy on AWS EKS](./README.md#deploy-on-aws-eks-optional) in the README.
 
 A request that fails auth never produces the trace you were looking for. Confirm this layer before you debug "why is my span missing".
 
